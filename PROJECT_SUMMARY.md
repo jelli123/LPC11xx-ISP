@@ -1,3 +1,53 @@
+# Project Summary — LPC11xx ISP Flasher
+
+## What It Does
+
+Programs LPC11xx microcontrollers via UART ISP using a Raspberry Pi Zero 2W.
+
+## Supported Chips
+
+All LPC11xx family members: LPC1110, LPC1111, LPC1112, LPC1113, LPC1114, LPC1115, LPC11C12, LPC11C14, LPC11C22, LPC11C24 — with automatic Part ID detection and flash/RAM size configuration.
+
+## Operations
+
+| Operation | Description |
+|-----------|-------------|
+| `write` | Write Intel Hex file to flash (with optional verify) |
+| `read` | Read flash contents into Intel Hex file |
+| `verify` | Compare flash against Intel Hex file |
+| `erase` | Erase flash sectors (all or range) |
+| `blankcheck` | Check if flash sectors are blank |
+| `id` | Read Part ID (with name), UID, boot code version |
+
+## Hardware
+
+- Raspberry Pi Zero 2W
+- UART connection (GPIO14 TX, GPIO15 RX)
+- GPIO17 (ISP Enable) and GPIO18 (Reset) through **inverters** to LPC11xx
+- Inverters required: RasPi GPIOs default LOW after reset → Inverter → HIGH = safe state
+
+## ISP Protocol
+
+- Text-based synchronization handshake per UM10398 Section 26.4.1
+- Single ASCII letter commands (J, P, E, C, W, R, U, N, M, I, K, A, B, G)
+- UU-encoded data transfer
+- 115200 baud, 8N1
+
+## Configuration
+
+Optional `config.ini` for GPIO pins, UART port, baud rate, crystal frequency. Auto-discovered in script directory.
+
+## Files
+
+- `lpc1115_flasher.py` — Main flasher (CLI with subcommands)
+- `lpc1115_isp_enhanced.py` — ISP protocol library
+- `diagnostic.py` — Hardware diagnostic tool
+- `config.example.ini` — Configuration template
+- `requirements.txt` — Python dependencies
+- `setup.sh` — Automated setup script
+- `README.md` — Full documentation
+- `QUICKSTART.md` — Quick start guide
+- `INDEX.md` — Project index
 # 🎯 PROJECT COMPLETION SUMMARY
 
 ## ✅ LPC1115 ISP Flasher for Raspberry Pi Zero 2W - COMPLETE
@@ -90,14 +140,16 @@ A comprehensive Python-based In-System Programming (ISP) flasher toolkit has bee
 ✓ Chip Reset Sequence
 
 ### ISP Protocol
-✓ Autobaud Synchronization
-✓ Bootloader Initialization
-✓ Part ID Reading & Verification
-✓ Unique ID Reading
-✓ Flash Erase Operations
-✓ RAM Read/Write
-✓ Flash Programming
-✓ Flash Verification
+✓ Text-based synchronization handshake (UM10398, Section 26.4.1)
+✓ Single-letter ASCII commands (J, P, E, C, W, R, G, U, N, M, I, K, A, B)
+✓ UU-encoded data transfer for Write/Read
+✓ Part ID Reading (Command: J) & Verification
+✓ Unique ID Reading (Command: N)
+✓ Sector Prepare (Command: P) & Erase (Command: E)
+✓ RAM Write (Command: W) & Read (Command: R)
+✓ Flash Programming via Copy RAM to Flash (Command: C)
+✓ Flash Verification via Compare (Command: M)
+✓ Execute User Code (Command: G)
 
 ### User Features
 ✓ Intel Hex File Parsing

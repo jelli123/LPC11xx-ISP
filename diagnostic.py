@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-LPC1115 ISP Diagnostic Tool
-Tests hardware connections and ISP communication without flashing
+LPC11xx ISP Diagnostic Tool
+Tests hardware connections and ISP communication without flashing.
+
+GPIO signals go through inverters before reaching the LPC11xx:
+  GPIO HIGH → Inverter → LPC pin LOW
+  GPIO LOW  → Inverter → LPC pin HIGH
 """
 
 import sys
@@ -18,7 +22,7 @@ except ImportError:
 
 
 class DiagnosticTool:
-    """Diagnostic tool for LPC1115 flashing setup"""
+    """Diagnostic tool for LPC11xx flashing setup"""
     
     RESET_PIN = 18
     ISP_ENABLE_PIN = 17
@@ -79,31 +83,33 @@ class DiagnosticTool:
                 self.log_info(f"Install with: pip3 install {package}")
     
     def test_gpio(self):
-        """Test GPIO pins"""
+        """Test GPIO pins (active-HIGH, inverters on board)"""
         print("\n[3] GPIO Pin Access")
         print("-" * 50)
+        self.log_info("GPIO signals go through inverters to LPC11xx")
+        self.log_info("GPIO HIGH → Inv → LPC pin LOW")
         
         try:
-            # Test Reset pin
+            # Test Reset pin (HIGH = /RESET LOW = chip in reset)
             GPIO.setup(self.RESET_PIN, GPIO.OUT)
-            GPIO.output(self.RESET_PIN, GPIO.LOW)
+            GPIO.output(self.RESET_PIN, GPIO.HIGH)
             state = GPIO.input(self.RESET_PIN)
-            if state == GPIO.LOW:
-                self.log_ok(f"GPIO18 (Reset) working")
+            if state == GPIO.HIGH:
+                self.log_ok(f"GPIO{self.RESET_PIN} (Reset) working — HIGH → Inv → /RESET LOW")
             else:
-                self.log_warn(f"GPIO18 may have issues (reads: {state})")
+                self.log_warn(f"GPIO{self.RESET_PIN} may have issues (reads: {state})")
             
-            # Test ISP_Enable pin
+            # Test ISP_Enable pin (HIGH = PIO0_1 LOW = ISP mode)
             GPIO.setup(self.ISP_ENABLE_PIN, GPIO.OUT)
             GPIO.output(self.ISP_ENABLE_PIN, GPIO.HIGH)
             state = GPIO.input(self.ISP_ENABLE_PIN)
             if state == GPIO.HIGH:
-                self.log_ok(f"GPIO17 (ISP_Enable) working")
+                self.log_ok(f"GPIO{self.ISP_ENABLE_PIN} (ISP_Enable) working — HIGH → Inv → PIO0_1 LOW")
             else:
-                self.log_warn(f"GPIO17 may have issues (reads: {state})")
+                self.log_warn(f"GPIO{self.ISP_ENABLE_PIN} may have issues (reads: {state})")
             
-            # Reset to safe state
-            GPIO.output(self.RESET_PIN, GPIO.HIGH)
+            # Reset to safe state (both LOW → Inv → both HIGH → chip running)
+            GPIO.output(self.RESET_PIN, GPIO.LOW)
             GPIO.output(self.ISP_ENABLE_PIN, GPIO.LOW)
             
         except Exception as e:
@@ -130,31 +136,34 @@ class DiagnosticTool:
                 port=self.UART_PORT,
                 baudrate=self.UART_BAUDRATE,
                 timeout=1.0,
-                xonxoff=False,
+                xonxoff=True,   # XON/XOFF flow control (DC1/DC3)
                 rtscts=False,
                 dsrdtr=False
             )
             self.log_ok(f"Serial port opened at {self.UART_BAUDRATE} baud")
             
             # Test communication (if we're already in ISP mode)
-            self.log_info("Attempting autobaud...")
+            self.log_info("Attempting ISP autobaud synchronization...")
             
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
             
-            # Send autobaud character
+            # Send autobaud character '?' — bootloader responds with "Synchronized\r\n"
             self.ser.write(b'?')
             self.ser.flush()
             
-            time.sleep(0.2)
-            response = self.ser.read(1)
+            time.sleep(0.3)
+            response = self.ser.readline().decode('ascii', errors='ignore').strip()
             
-            if response == b'?':
-                self.log_ok("Autobaud successful - LPC1115 is in ISP mode!")
+            if response == "Synchronized":
+                self.log_ok("ISP bootloader responded — LPC11xx is in ISP mode!")
+            elif response:
+                self.log_warn(f"Got response '{response}' (expected 'Synchronized')")
+                self.log_info("LPC11xx may not be in ISP mode")
             else:
-                self.log_warn("No autobaud response")
-                self.log_info("LPC1115 may not be in ISP mode yet")
-                self.log_info("Try: python3 lpc1115_flasher.py <hex_file>")
+                self.log_warn("No response from bootloader")
+                self.log_info("LPC11xx may not be in ISP mode yet")
+                self.log_info("Try: sudo python3 lpc1115_flasher.py <hex_file>")
             
             self.ser.close()
             
@@ -173,47 +182,32 @@ class DiagnosticTool:
         try:
             self.log_info("Testing ISP mode entry sequence...")
             self.log_info("(No actual flashing will occur)")
+            self.log_info("GPIOs go through inverters: HIGH → Inv → LPC pin LOW")
             
-            # Test sequence
-            print("  Step 1: Set ISP_Enable (GPIO17) HIGH")
+            # Sequence: ISP_Enable HIGH, Reset HIGH (assert), Reset LOW (release)
+            print("  Step 1: ISP_Enable HIGH → Inv → PIO0_1 LOW (request ISP)")
             GPIO.output(self.ISP_ENABLE_PIN, GPIO.HIGH)
             time.sleep(0.05)
             if GPIO.input(self.ISP_ENABLE_PIN) == GPIO.HIGH:
-                print("    ✓ GPIO17 set to HIGH")
+                print("    ✓ GPIO17 HIGH")
             else:
-                print("    ✗ GPIO17 read as LOW (unexpected)")
+                print("    ✗ GPIO17 not HIGH (unexpected)")
             
-            print("  Step 2: Set Reset (GPIO18) HIGH")
+            print("  Step 2: Reset HIGH → Inv → /RESET LOW (assert reset)")
             GPIO.output(self.RESET_PIN, GPIO.HIGH)
-            time.sleep(0.05)
+            time.sleep(0.1)
             if GPIO.input(self.RESET_PIN) == GPIO.HIGH:
-                print("    ✓ GPIO18 set to HIGH")
+                print("    ✓ GPIO18 HIGH")
             else:
-                print("    ✗ GPIO18 read as LOW (unexpected)")
+                print("    ✗ GPIO18 not HIGH (unexpected)")
             
-            print("  Step 3: Set Reset (GPIO18) LOW")
+            print("  Step 3: Reset LOW → Inv → /RESET HIGH (release, enter ISP)")
             GPIO.output(self.RESET_PIN, GPIO.LOW)
-            time.sleep(0.1)
-            if GPIO.input(self.RESET_PIN) == GPIO.LOW:
-                print("    ✓ GPIO18 set to LOW")
-            else:
-                print("    ✗ GPIO18 read as HIGH (unexpected)")
-            
-            print("  Step 4: Set ISP_Enable (GPIO17) LOW")
-            GPIO.output(self.ISP_ENABLE_PIN, GPIO.LOW)
-            time.sleep(0.1)
-            if GPIO.input(self.ISP_ENABLE_PIN) == GPIO.LOW:
-                print("    ✓ GPIO17 set to LOW")
-            else:
-                print("    ✗ GPIO17 read as HIGH (unexpected)")
-            
-            print("  Step 5: Set Reset (GPIO18) HIGH")
-            GPIO.output(self.RESET_PIN, GPIO.HIGH)
             time.sleep(0.2)
-            if GPIO.input(self.RESET_PIN) == GPIO.HIGH:
-                print("    ✓ GPIO18 set to HIGH")
+            if GPIO.input(self.RESET_PIN) == GPIO.LOW:
+                print("    ✓ GPIO18 LOW (reset released, bootloader starting)")
             else:
-                print("    ✗ GPIO18 read as LOW (unexpected)")
+                print("    ✗ GPIO18 not LOW (unexpected)")
             
             self.log_ok("ISP mode sequence completed")
             
@@ -223,24 +217,28 @@ class DiagnosticTool:
                 ser = serial.Serial(
                     self.UART_PORT,
                     self.UART_BAUDRATE,
-                    timeout=1.0
+                    timeout=2.0
                 )
                 
                 time.sleep(0.2)
                 ser.reset_input_buffer()
                 ser.reset_output_buffer()
                 
-                # Send autobaud
+                # ISP synchronization: send '?' and expect "Synchronized"
                 ser.write(b'?')
                 ser.flush()
-                time.sleep(0.2)
+                time.sleep(0.3)
                 
-                response = ser.read(1)
-                if response == b'?':
-                    self.log_ok("UART communication successful!")
-                    self.log_ok("Hardware appears to be working correctly")
+                response = ser.readline().decode('ascii', errors='ignore').strip()
+                if response == "Synchronized":
+                    self.log_ok("ISP synchronization successful!")
+                    self.log_ok("Bootloader responded with 'Synchronized'")
+                    self.log_info("Full sync requires: echo 'Synchronized', then crystal freq")
+                elif response:
+                    self.log_warn(f"Unexpected response: '{response}'")
+                    self.log_info("Expected 'Synchronized' from bootloader")
                 else:
-                    self.log_warn("No response on UART (expected '?', got nothing)")
+                    self.log_warn("No response on UART after '?' autobaud character")
                     self.log_info("Check:")
                     self.log_info("  - UART TX/RX connections")
                     self.log_info("  - LPC1115 power supply")
@@ -254,9 +252,9 @@ class DiagnosticTool:
         except Exception as e:
             self.log_error(f"ISP sequence test failed: {e}")
         finally:
-            # Reset to safe state
+            # Reset to safe state (both LOW → Inv → both HIGH → chip running)
             try:
-                GPIO.output(self.RESET_PIN, GPIO.HIGH)
+                GPIO.output(self.RESET_PIN, GPIO.LOW)
                 GPIO.output(self.ISP_ENABLE_PIN, GPIO.LOW)
             except:
                 pass
@@ -301,7 +299,7 @@ class DiagnosticTool:
     def run(self):
         """Run all tests"""
         print("=" * 50)
-        print("LPC1115 ISP Diagnostic Tool")
+        print("LPC11xx ISP Diagnostic Tool")
         print("=" * 50)
         
         self.test_python_version()
@@ -323,7 +321,7 @@ class DiagnosticTool:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='LPC1115 ISP Diagnostic Tool'
+        description='LPC11xx ISP Diagnostic Tool'
     )
     
     args = parser.parse_args()

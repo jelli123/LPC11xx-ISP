@@ -1,3 +1,81 @@
+# LPC11xx ISP Flasher — Project Index
+
+## Overview
+
+Python-based ISP (In-System Programming) flasher for the LPC11xx microcontroller family, running on Raspberry Pi Zero 2W. Supports all LPC11xx variants (LPC1110–LPC1115, LPC11C1x, LPC11C2x) with automatic chip detection.
+
+## File Structure
+
+### Programs
+
+| File | Description |
+|------|-------------|
+| **lpc1115_flasher.py** | Main flasher with 6 operations (write/read/verify/erase/blankcheck/id) |
+| **lpc1115_isp_enhanced.py** | ISP protocol library — complete LPC11xx command set, Part ID table, flash memory management |
+| **diagnostic.py** | Hardware diagnostic tool — tests GPIO, UART, ISP mode entry |
+
+### Configuration
+
+| File | Description |
+|------|-------------|
+| **config.example.ini** | Configuration template (GPIO pins, UART, crystal frequency) |
+| **requirements.txt** | Python dependencies (pyserial, intelhex, RPi.GPIO) |
+
+### Setup
+
+| File | Description |
+|------|-------------|
+| **setup.sh** | Automated installation script |
+
+### Documentation
+
+| File | Description |
+|------|-------------|
+| **README.md** | Complete reference: hardware, CLI, protocol, troubleshooting |
+| **QUICKSTART.md** | 5-minute setup guide |
+| **INDEX.md** | This file |
+| **PROJECT_SUMMARY.md** | Feature summary |
+
+## Workflow
+
+```
+1. Wire hardware (with inverters on RESET + ISP_Enable)
+2. sudo ./setup.sh
+3. sudo python3 diagnostic.py          (verify hardware)
+4. sudo python3 lpc1115_flasher.py id  (identify chip)
+5. sudo python3 lpc1115_flasher.py write firmware.hex
+```
+
+## Hardware Summary
+
+GPIO signals pass through inverters before reaching the LPC11xx:
+
+```
+GPIO LOW (default) → Inverter → HIGH → safe state (running, normal boot)
+GPIO HIGH (active) → Inverter → LOW  → active function (reset / ISP entry)
+```
+
+| Function | RasPi Pin | GPIO | via Inverter → | LPC11xx Pin |
+|----------|-----------|------|----------------|-------------|
+| ISP Enable | Pin 11 | GPIO17 | → Inverter → | PIO0_1 |
+| Reset | Pin 12 | GPIO18 | → Inverter → | /RESET |
+| UART TX | Pin 8 | GPIO14 | direct | RXD |
+| UART RX | Pin 10 | GPIO15 | direct | TXD |
+| Ground | Pin 6 | GND | direct | GND |
+
+## ISP Commands (UM10398, Chapter 26)
+
+Single ASCII letter commands:
+
+| Letter | Function | Letter | Function |
+|--------|----------|--------|----------|
+| `J` | Read Part ID | `N` | Read UID |
+| `K` | Read Boot Version | `U` | Unlock |
+| `P` | Prepare Sectors | `E` | Erase Sectors |
+| `C` | Copy RAM→Flash | `I` | Blank Check |
+| `W` | Write to RAM | `R` | Read Memory |
+| `M` | Compare Memory | `G` | Go (execute) |
+| `A` | Echo on/off | `B` | Set Baud Rate |
 # LPC1115 ISP Flasher - Complete Project Index
 
 ## Project Overview
@@ -52,8 +130,9 @@ sudo python3 lpc1115_flasher.py your_program.hex
 **Usage**:
 ```python
 from lpc1115_isp_enhanced import EnhancedISPProtocol
-isp = EnhancedISPProtocol(serial_port)
-part_id = isp.read_part_id_ex()
+isp = EnhancedISPProtocol(serial_port, crystal_freq_khz=12000)
+isp.synchronize()
+part_id = isp.read_part_id()
 ```
 
 ---
@@ -253,33 +332,40 @@ sudo python3 diagnostic.py
 
 ### ISP (In-System Programming) Mode Entry
 
-The flasher implements the ISP mode sequence from the LPC1100 user manual:
+The flasher implements the ISP mode sequence from the LPC11xx user manual.
+PIO0_1 must be LOW when RESET is released to enter ISP mode.
 
 ```
-Step 1: ISP_Enable ← HIGH (prepare bootloader)
-Step 2: Reset ← HIGH (hold in reset state)
-Step 3: Reset ← LOW (apply reset pulse)
-Step 4: ISP_Enable ← LOW (bootloader detects this)
-Step 5: Reset ← HIGH (release reset, start bootloader)
-Result: Bootloader running, waiting for autobaud
+Step 1: ISP_Enable ← HIGH (pulls PIO0_1 LOW via inverter)
+Step 2: Reset ← LOW (assert reset)
+Step 3: Wait 100ms (hold reset)
+Step 4: Reset ← HIGH (release reset, PIO0_1 sampled LOW → ISP mode)
+Result: Bootloader running, waiting for '?' autobaud character
 ```
 
-### UART Autobaud Mechanism
+### UART Synchronization (UM10398, Section 26.4.1)
 
-The LPC1115 bootloader measures the bit-time of received characters to determine baud rate:
+The LPC11xx ISP uses a text-based synchronization handshake:
 
-1. Flasher sends '?' at 115200 baud
-2. Bootloader measures the bit timing
-3. Bootloader confirms by echoing '?'
-4. Both sides now synchronized and can communicate
+1. Host sends '?' character at configured baud rate
+2. Bootloader measures bit timing and responds with "Synchronized\r\n"
+3. Host echoes "Synchronized\r\n"
+4. Bootloader confirms with "OK\r\n"
+5. Host sends crystal frequency in kHz (e.g. "12000\r\n")
+6. Bootloader confirms with "OK\r\n"
+
+After synchronization, all commands are single-letter ASCII commands (J, P, E, C, W, R, G, U, N, etc.).
 
 ### Flash Programming Process
 
-1. **Verify chip** - Read Part ID and confirm LPC1115
-2. **Prepare sectors** - Mark sectors for writing
-3. **Write to RAM** - Load program data into RAM first
-4. **Copy to Flash** - Transfer from RAM to Flash
-5. **Verify** - Read back and compare
+1. **Synchronize** - Handshake with bootloader (text-based)
+2. **Unlock** - Command `U 23130` to enable flash write
+3. **Verify chip** - Command `J` to read Part ID
+4. **Prepare sectors** - Command `P <start> <end>`
+5. **Erase sectors** - Command `E <start> <end>`
+6. **Write to RAM** - Command `W <addr> <len>` + UU-encoded data
+7. **Copy to Flash** - Command `C <dst> <src> <len>`
+8. **Verify** - Command `M <addr1> <addr2> <len>` to compare
 
 ---
 

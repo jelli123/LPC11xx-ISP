@@ -3,6 +3,135 @@
 ## Prerequisites
 
 - Raspberry Pi Zero 2W running Raspberry Pi OS
+- LPC11xx microcontroller board
+- Inverter circuit on RESET and ISP_Enable lines (see README.md for details)
+- Intel Hex file to flash
+
+## Step-by-Step Setup
+
+### 1. Hardware Connections
+
+Connect your Raspberry Pi to LPC11xx **through inverters**:
+
+```
+Raspberry Pi          Inverter        LPC11xx
+─────────────         ────────        ───────
+Pin 11 (GPIO17)  ──→  Inverter  ──→  PIO0_1 (ISP entry)
+Pin 12 (GPIO18)  ──→  Inverter  ──→  /RESET
+Pin 8  (GPIO14)  ─────────────────→  RXD
+Pin 10 (GPIO15)  ←────────────────   TXD
+Pin 6  (GND)     ─────────────────→  GND
+Pin 17 (3.3V)    ─────────────────→  VCC (optional)
+```
+
+**Why inverters?** After a Raspberry Pi reset, GPIOs default to LOW (input with pull-down). The inverters convert this to HIGH on the LPC side, ensuring /RESET is HIGH (not in reset) and PIO0_1 is HIGH (normal boot) — a safe default state.
+
+### 2. Enable UART on Raspberry Pi
+
+```bash
+sudo raspi-config
+# Go to: Interface Options → Serial Port
+# Disable: "Would you like a login shell to be accessible over serial?"
+# Enable: "Would you like the serial port hardware to be enabled?"
+# Reboot
+```
+
+### 3. Copy Files to Raspberry Pi
+
+```bash
+mkdir ~/lpc-flasher
+cd ~/lpc-flasher
+# Copy all files here
+```
+
+### 4. Run Setup Script
+
+```bash
+chmod +x setup.sh
+sudo ./setup.sh
+```
+
+### 5. Run Diagnostic (Recommended)
+
+```bash
+sudo python3 diagnostic.py
+```
+
+### 6. Flash Your Program
+
+```bash
+sudo python3 lpc1115_flasher.py write your_program.hex
+```
+
+## All Operations
+
+```bash
+# Write hex file to flash (with automatic verify)
+sudo python3 lpc1115_flasher.py write firmware.hex
+
+# Write without verification
+sudo python3 lpc1115_flasher.py write firmware.hex --no-verify
+
+# Read flash into hex file
+sudo python3 lpc1115_flasher.py read readback.hex
+
+# Read specific range
+sudo python3 lpc1115_flasher.py read readback.hex --start 0x1000 --length 4096
+
+# Verify flash against hex file
+sudo python3 lpc1115_flasher.py verify firmware.hex
+
+# Erase all flash
+sudo python3 lpc1115_flasher.py erase
+
+# Erase specific sectors
+sudo python3 lpc1115_flasher.py erase --start-sector 0 --end-sector 3
+
+# Blank check
+sudo python3 lpc1115_flasher.py blankcheck
+
+# Read chip ID, UID, and boot version
+sudo python3 lpc1115_flasher.py id
+```
+
+## Configuration (Optional)
+
+```bash
+cp config.example.ini config.ini
+# Edit config.ini to change GPIO pins, UART port, baud rate, crystal frequency
+```
+
+## Troubleshooting
+
+### Port Permission Denied
+```bash
+sudo usermod -a -G gpio,dialout $USER
+# Log out and back in
+```
+
+### Serial Port Busy
+```bash
+sudo systemctl stop serial-getty@ttyAMA0.service
+sudo systemctl disable serial-getty@ttyAMA0.service
+```
+
+### Synchronization Fails
+1. Check UART wiring (TX/RX not swapped?)
+2. Verify 3.3V logic levels
+3. Check inverters are working correctly
+4. Verify crystal frequency matches target board (default: 12 MHz)
+
+### No Response from LPC11xx
+1. Check power supply to LPC11xx
+2. Verify inverters: GPIO HIGH must produce LPC pin LOW
+3. Check PIO0_1 goes LOW when /RESET goes HIGH (ISP entry condition)
+
+For detailed documentation, see [README.md](README.md).
+# Quick Start Guide
+
+## Prerequisites
+
+- Raspberry Pi Zero 2W running Raspberry Pi OS
 - LPC1115 microcontroller
 - Appropriate wiring (see Hardware Setup section)
 - Intel Hex file to flash
@@ -90,26 +219,31 @@ Setting up GPIO pins...
   ✓ GPIO pins configured
 
 Loading hex file: blink.hex
-  ✓ Hex file loaded (2048 bytes)
+  ✓ Hex file loaded
+    Address range: 0x00000000 - 0x000007FF
+    Size: 2048 bytes
 
 Entering ISP mode...
+  1. Activating ISP_Enable (GPIO17 HIGH)
+  2. Asserting Reset (GPIO18 LOW)
+  3. Releasing Reset (GPIO18 HIGH)
   ✓ ISP mode entered
 
-Initializing ISP connection...
-  ✓ ISP connection established
+Synchronizing with bootloader...
+  ✓ Synchronization successful
 
-Verifying chip signature...
-  Part ID: 0x25001115
-  ✓ LPC1115 detected
+Verifying chip...
+  Part ID: 0x00040044
+  ✓ Detected: LPC1115/302
 
-Flashing program...
-  ✓ Program flashed successfully
+Programming flash...
+  ✓ Programming complete
 
 Verifying flash...
-  ✓ Flash verification passed
+  ✓ All segments verified successfully
 
-Resetting LPC1115...
-  ✓ LPC1115 reset and running
+Resetting LPC1115 to normal operation...
+  ✓ LPC1115 reset and running user code
 
 ==================================================
 ✓ Flashing completed successfully!
