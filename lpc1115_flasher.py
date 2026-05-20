@@ -312,15 +312,20 @@ class LPC11xxFlasher:
         time.sleep(0.5)  # Wait for bootloader UART init
 
     def synchronize(self) -> bool:
-        """Perform ISP synchronization handshake."""
+        """Perform ISP synchronization handshake.
+
+        The LPC autobaud calibration at 115200 baud may not lock perfectly
+        on every attempt. Multiple retries with full reset cycles typically
+        succeed within 2-5 attempts.
+        """
         print("\nSynchronizing with bootloader...")
 
         self.isp = EnhancedISPProtocol(self.serial_port, self.crystal_freq_khz, verbose=self.verbose)
 
-        for attempt in range(3):
+        for attempt in range(5):
             if attempt > 0:
-                print(f"  Retry {attempt + 1}/3...")
-                # Re-enter ISP mode fully (ISP_Enable + reset cycle)
+                print(f"  Retry {attempt + 1}/5...")
+                # Re-enter ISP mode fully (reset for fresh autobaud calibration)
                 self._re_enter_isp()
                 time.sleep(0.1)
                 # Clear serial buffers after reset
@@ -333,12 +338,9 @@ class LPC11xxFlasher:
                 print("  ✓ Synchronized")
                 return True
 
-        print("  ✗ Synchronization failed")
-        print("    No response from bootloader. Check:")
-        print(f"    - Is {self.uart_port} the correct port? (Pi Zero 2W: try /dev/ttyS0)")
-        print("    - Are UART TX/RX connected correctly? (TX→RX, RX→TX)")
-        print("    - Is LPC11xx powered and has a working crystal?")
-        print("    - Run 'sudo python3 diagnostic.py' for detailed checks")
+        print("  ✗ Synchronization failed after 5 attempts")
+        print(f"    Port: {self.uart_port}")
+        print("    Tip: Try lower baud rate in config.ini (e.g. uart_baudrate = 57600)")
         return False
 
     def detect_chip(self) -> bool:
