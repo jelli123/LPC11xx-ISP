@@ -646,7 +646,7 @@ class EnhancedISPProtocol:
                 # Send UU-encoded lines for this block
                 while pos < block_end:
                     chunk = data[pos:pos + 45]
-                    encoded = binascii.b2a_uu(chunk)
+                    encoded = binascii.b2a_uu(chunk, backtick=True)
                     self._log_tx(encoded)
                     self.port.write(encoded)
                     self.port.flush()
@@ -695,6 +695,48 @@ class EnhancedISPProtocol:
         finally:
             self.port.timeout = old_timeout
 
+    @staticmethod
+    def _uu_decode_line(line: bytes) -> Optional[bytes]:
+        """Decode a single UU-encoded line.
+
+        Manual implementation because Python 3.13's binascii.a2b_uu() is
+        stricter and rejects some valid UU lines from the LPC bootloader.
+
+        UU encoding:
+          - First byte = (number_of_data_bytes + 32) & 0x7F
+          - Backtick (0x60) is used as alternate for space (both = value 0)
+          - Each group of 3 data bytes → 4 encoded chars (6 bits each)
+          - Encoded char = value + 32 (range 0x20-0x5F, or 0x60 for 0)
+        """
+        line = line.rstrip(b'\r\n')
+        if not line:
+            return None
+
+        # Length byte
+        n = (line[0] - 32) & 0x3F
+        if n == 0:
+            return b''
+
+        result = bytearray()
+        i = 1
+        while len(result) < n:
+            # Get 4 encoded chars (pad with 0 if line is short)
+            c = [0, 0, 0, 0]
+            for j in range(4):
+                if i + j < len(line):
+                    ch = line[i + j]
+                    c[j] = (ch - 32) & 0x3F if ch != 0x60 else 0
+            i += 4
+
+            # Decode to 3 bytes
+            result.append((c[0] << 2) | (c[1] >> 4))
+            if len(result) < n:
+                result.append(((c[1] & 0x0F) << 4) | (c[2] >> 2))
+            if len(result) < n:
+                result.append(((c[2] & 0x03) << 6) | c[3])
+
+        return bytes(result[:n])
+
     def _receive_uuencoded_data(self, length: int, max_retries: int = 3) -> Optional[bytes]:
         """
         Receive UU-encoded data from bootloader.
@@ -737,14 +779,24 @@ class EnhancedISPProtocol:
 
                     line_stripped = line.strip()
 
-                    # Try to decode as UU-encoded data
-                    try:
-                        decoded = binascii.a2b_uu(line)
-                        block_data += decoded
-                        block_checksum += sum(decoded)
-                        lines_received += 1
-                    except binascii.Error:
-                        # Not UU data — must be the checksum line
+                    # Distinguish UU-encoded data from checksum line.
+                    # Checksum lines contain only ASCII digits (0-9).
+                    # UU lines start with a length byte (space to 'M', i.e. 0x20-0x4D)
+                    # followed by encoded characters in range 0x20-0x60.
+                    is_checksum = line_stripped.decode('ascii', errors='ignore').strip().isdigit()
+
+                    if not is_checksum:
+                        decoded = self._uu_decode_line(line)
+                        if decoded is not None:
+                            block_data += decoded
+                            block_checksum += sum(decoded)
+                            lines_received += 1
+                        else:
+                            if self.verbose:
+                                print(f"    UU decode failed: {line_stripped}")
+                            return None
+                    else:
+                        # Checksum line
                         try:
                             received_checksum = int(line_stripped.decode('ascii'))
                             if received_checksum == block_checksum:
