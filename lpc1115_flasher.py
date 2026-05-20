@@ -198,7 +198,7 @@ class LPC11xxFlasher:
             #         Chip samples PIO0_1=LOW → enters ISP bootloader
             print("  3. Reset → /RESET HIGH (release reset, enter ISP)")
             GPIO.output(self.reset_pin, self._reset_inactive())
-            time.sleep(0.2)
+            time.sleep(0.5)  # Wait for bootloader UART init before releasing PIO0_1
 
             # Step 4: Release ISP_Enable (clean state, bootloader already running)
             print("  4. ISP_Enable → PIO0_1 HIGH (clean state)")
@@ -287,6 +287,19 @@ class LPC11xxFlasher:
             self.serial_port.close()
             self.serial_port = None
 
+    def _re_enter_isp(self):
+        """Re-enter ISP mode silently (for sync retries).
+        Asserts ISP_Enable, resets, releases, then releases ISP_Enable.
+        """
+        GPIO.output(self.isp_enable_pin, self._isp_active())
+        time.sleep(0.01)
+        GPIO.output(self.reset_pin, self._reset_active())
+        time.sleep(0.1)
+        GPIO.output(self.reset_pin, self._reset_inactive())
+        time.sleep(0.5)
+        GPIO.output(self.isp_enable_pin, self._isp_inactive())
+        time.sleep(0.01)
+
     def synchronize(self) -> bool:
         """Perform ISP synchronization handshake."""
         print("\nSynchronizing with bootloader...")
@@ -296,9 +309,8 @@ class LPC11xxFlasher:
         for attempt in range(3):
             if attempt > 0:
                 print(f"  Retry {attempt + 1}/3...")
-                # Reset target to restart the bootloader for a clean handshake
-                self.reset_target()
-                time.sleep(0.5)
+                # Re-enter ISP mode fully (ISP_Enable + reset cycle)
+                self._re_enter_isp()
                 # Clear serial buffers after reset
                 self.serial_port.reset_input_buffer()
                 self.serial_port.reset_output_buffer()
@@ -348,6 +360,9 @@ class LPC11xxFlasher:
             return False
         if not self.open_serial():
             return False
+        # Clear any garbage received during reset/boot sequence
+        self.serial_port.reset_input_buffer()
+        self.serial_port.reset_output_buffer()
         if not self.synchronize():
             self.close_serial()
             return False

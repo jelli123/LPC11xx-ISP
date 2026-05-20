@@ -3,15 +3,16 @@
 LPC11xx ISP Diagnostic Tool
 Tests hardware connections and ISP communication without flashing.
 
-GPIO signals go through inverters before reaching the LPC11xx:
-  GPIO HIGH → Inverter → LPC pin LOW
-  GPIO LOW  → Inverter → LPC pin HIGH
+Supports both inverted (through hardware inverter) and direct GPIO connections.
+Configure via config.ini (see config.example.ini).
 """
 
 import sys
 import time
 import serial
 import argparse
+import configparser
+import os
 from pathlib import Path
 
 try:
@@ -23,20 +24,56 @@ except ImportError:
 
 class DiagnosticTool:
     """Diagnostic tool for LPC11xx flashing setup"""
-    
+
     RESET_PIN = 18
     ISP_ENABLE_PIN = 17
-    
+
     UART_PORT = '/dev/ttyAMA0'
     UART_BAUDRATE = 115200
-    
+
     def __init__(self):
         self.ser = None
         self.errors = 0
         self.warnings = 0
-        
+
+        # GPIO inversion flags (default: inverted)
+        self.invert_reset = True
+        self.invert_isp_enable = True
+
+        self._load_config()
+
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
+
+    def _load_config(self):
+        """Load configuration from config.ini if present."""
+        script_dir = Path(__file__).parent
+        config_file = script_dir / 'config.ini'
+        if not config_file.exists():
+            return
+
+        config = configparser.ConfigParser()
+        config.read(str(config_file))
+
+        if config.has_section('hardware'):
+            self.RESET_PIN = config.getint('hardware', 'reset_pin', fallback=self.RESET_PIN)
+            self.ISP_ENABLE_PIN = config.getint('hardware', 'isp_enable_pin', fallback=self.ISP_ENABLE_PIN)
+            self.UART_PORT = config.get('hardware', 'uart_port', fallback=self.UART_PORT)
+            self.UART_BAUDRATE = config.getint('hardware', 'uart_baudrate', fallback=self.UART_BAUDRATE)
+            self.invert_reset = config.getboolean('hardware', 'invert_reset', fallback=self.invert_reset)
+            self.invert_isp_enable = config.getboolean('hardware', 'invert_isp_enable', fallback=self.invert_isp_enable)
+
+    def _reset_active(self) -> int:
+        return GPIO.HIGH if self.invert_reset else GPIO.LOW
+
+    def _reset_inactive(self) -> int:
+        return GPIO.LOW if self.invert_reset else GPIO.HIGH
+
+    def _isp_active(self) -> int:
+        return GPIO.HIGH if self.invert_isp_enable else GPIO.LOW
+
+    def _isp_inactive(self) -> int:
+        return GPIO.LOW if self.invert_isp_enable else GPIO.HIGH
     
     def log_info(self, msg: str):
         print(f"ℹ  {msg}")
@@ -83,35 +120,42 @@ class DiagnosticTool:
                 self.log_info(f"Install with: pip3 install {package}")
     
     def test_gpio(self):
-        """Test GPIO pins (active-HIGH, inverters on board)"""
+        """Test GPIO pins"""
         print("\n[3] GPIO Pin Access")
         print("-" * 50)
-        self.log_info("GPIO signals go through inverters to LPC11xx")
-        self.log_info("GPIO HIGH → Inv → LPC pin LOW")
-        
+        if self.invert_reset or self.invert_isp_enable:
+            self.log_info("GPIO signals go through inverters to LPC11xx")
+            self.log_info("GPIO HIGH → Inv → LPC pin LOW")
+        else:
+            self.log_info("GPIO signals connected directly to LPC11xx")
+
         try:
-            # Test Reset pin (HIGH = /RESET LOW = chip in reset)
+            # Test Reset pin
             GPIO.setup(self.RESET_PIN, GPIO.OUT)
-            GPIO.output(self.RESET_PIN, GPIO.HIGH)
+            GPIO.output(self.RESET_PIN, self._reset_active())
             state = GPIO.input(self.RESET_PIN)
-            if state == GPIO.HIGH:
-                self.log_ok(f"GPIO{self.RESET_PIN} (Reset) working — HIGH → Inv → /RESET LOW")
+            expected = self._reset_active()
+            if state == expected:
+                inv_str = " → Inv → /RESET LOW" if self.invert_reset else " → /RESET LOW"
+                self.log_ok(f"GPIO{self.RESET_PIN} (Reset) working{inv_str}")
             else:
                 self.log_warn(f"GPIO{self.RESET_PIN} may have issues (reads: {state})")
-            
-            # Test ISP_Enable pin (HIGH = PIO0_1 LOW = ISP mode)
+
+            # Test ISP_Enable pin
             GPIO.setup(self.ISP_ENABLE_PIN, GPIO.OUT)
-            GPIO.output(self.ISP_ENABLE_PIN, GPIO.HIGH)
+            GPIO.output(self.ISP_ENABLE_PIN, self._isp_active())
             state = GPIO.input(self.ISP_ENABLE_PIN)
-            if state == GPIO.HIGH:
-                self.log_ok(f"GPIO{self.ISP_ENABLE_PIN} (ISP_Enable) working — HIGH → Inv → PIO0_1 LOW")
+            expected = self._isp_active()
+            if state == expected:
+                inv_str = " → Inv → PIO0_1 LOW" if self.invert_isp_enable else " → PIO0_1 LOW"
+                self.log_ok(f"GPIO{self.ISP_ENABLE_PIN} (ISP_Enable) working{inv_str}")
             else:
                 self.log_warn(f"GPIO{self.ISP_ENABLE_PIN} may have issues (reads: {state})")
-            
-            # Reset to safe state (both LOW → Inv → both HIGH → chip running)
-            GPIO.output(self.RESET_PIN, GPIO.LOW)
-            GPIO.output(self.ISP_ENABLE_PIN, GPIO.LOW)
-            
+
+            # Reset to safe state (chip running, normal boot)
+            GPIO.output(self.RESET_PIN, self._reset_inactive())
+            GPIO.output(self.ISP_ENABLE_PIN, self._isp_inactive())
+
         except Exception as e:
             self.log_error(f"GPIO test failed: {e}")
             self.log_info("Make sure you're running with 'sudo'")
@@ -178,57 +222,70 @@ class DiagnosticTool:
         """Test ISP mode entry sequence"""
         print("\n[5] ISP Mode Sequence")
         print("-" * 50)
-        
+
         try:
             self.log_info("Testing ISP mode entry sequence...")
             self.log_info("(No actual flashing will occur)")
-            self.log_info("GPIOs go through inverters: HIGH → Inv → LPC pin LOW")
-            
-            # Sequence: ISP_Enable HIGH, Reset HIGH (assert), Reset LOW (release)
-            print("  Step 1: ISP_Enable HIGH → Inv → PIO0_1 LOW (request ISP)")
-            GPIO.output(self.ISP_ENABLE_PIN, GPIO.HIGH)
+            if self.invert_reset:
+                self.log_info("Reset: inverted (GPIO HIGH → /RESET LOW)")
+            else:
+                self.log_info("Reset: direct (GPIO LOW → /RESET LOW)")
+            if self.invert_isp_enable:
+                self.log_info("ISP_Enable: inverted (GPIO HIGH → PIO0_1 LOW)")
+            else:
+                self.log_info("ISP_Enable: direct (GPIO LOW → PIO0_1 LOW)")
+
+            # Step 1: ISP_Enable active → PIO0_1 LOW
+            print("  Step 1: ISP_Enable → PIO0_1 LOW (request ISP)")
+            GPIO.output(self.ISP_ENABLE_PIN, self._isp_active())
             time.sleep(0.05)
-            if GPIO.input(self.ISP_ENABLE_PIN) == GPIO.HIGH:
-                print("    ✓ GPIO17 HIGH")
+            if GPIO.input(self.ISP_ENABLE_PIN) == self._isp_active():
+                print("    ✓ ISP_Enable active")
             else:
-                print("    ✗ GPIO17 not HIGH (unexpected)")
-            
-            print("  Step 2: Reset HIGH → Inv → /RESET LOW (assert reset)")
-            GPIO.output(self.RESET_PIN, GPIO.HIGH)
+                print("    ✗ ISP_Enable not at expected level")
+
+            # Step 2: Reset active → /RESET LOW
+            print("  Step 2: Reset → /RESET LOW (assert reset)")
+            GPIO.output(self.RESET_PIN, self._reset_active())
             time.sleep(0.1)
-            if GPIO.input(self.RESET_PIN) == GPIO.HIGH:
-                print("    ✓ GPIO18 HIGH")
+            if GPIO.input(self.RESET_PIN) == self._reset_active():
+                print("    ✓ Reset asserted")
             else:
-                print("    ✗ GPIO18 not HIGH (unexpected)")
-            
-            print("  Step 3: Reset LOW → Inv → /RESET HIGH (release, enter ISP)")
-            GPIO.output(self.RESET_PIN, GPIO.LOW)
-            time.sleep(0.2)
-            if GPIO.input(self.RESET_PIN) == GPIO.LOW:
-                print("    ✓ GPIO18 LOW (reset released, bootloader starting)")
+                print("    ✗ Reset not at expected level")
+
+            # Step 3: Reset inactive → /RESET HIGH (enter ISP)
+            print("  Step 3: Reset → /RESET HIGH (release, enter ISP)")
+            GPIO.output(self.RESET_PIN, self._reset_inactive())
+            time.sleep(0.5)
+            if GPIO.input(self.RESET_PIN) == self._reset_inactive():
+                print("    ✓ Reset released (bootloader starting)")
             else:
-                print("    ✗ GPIO18 not LOW (unexpected)")
-            
+                print("    ✗ Reset not at expected level")
+
+            # Step 4: ISP_Enable inactive → PIO0_1 HIGH (clean state)
+            print("  Step 4: ISP_Enable → PIO0_1 HIGH (clean state)")
+            GPIO.output(self.ISP_ENABLE_PIN, self._isp_inactive())
+            time.sleep(0.01)
+
             self.log_ok("ISP mode sequence completed")
-            
+
             # Check UART after entering ISP mode
             print("\n  Checking UART communication after ISP entry...")
             try:
                 ser = serial.Serial(
                     self.UART_PORT,
                     self.UART_BAUDRATE,
-                    timeout=2.0
+                    timeout=3.0
                 )
-                
-                time.sleep(0.2)
+
+                time.sleep(0.1)
                 ser.reset_input_buffer()
                 ser.reset_output_buffer()
-                
+
                 # ISP synchronization: send '?' and expect "Synchronized"
                 ser.write(b'?')
                 ser.flush()
-                time.sleep(0.3)
-                
+
                 response = ser.readline().decode('ascii', errors='ignore').strip()
                 if response == "Synchronized":
                     self.log_ok("ISP synchronization successful!")
@@ -243,19 +300,21 @@ class DiagnosticTool:
                     self.log_info("  - UART TX/RX connections")
                     self.log_info("  - LPC1115 power supply")
                     self.log_info("  - Logic levels (3.3V)")
-                
+
                 ser.close()
-                
+
             except Exception as e:
                 self.log_warn(f"Could not test UART: {e}")
-            
+
         except Exception as e:
             self.log_error(f"ISP sequence test failed: {e}")
         finally:
-            # Reset to safe state (both LOW → Inv → both HIGH → chip running)
+            # Reset to safe state: normal boot
             try:
-                GPIO.output(self.RESET_PIN, GPIO.LOW)
-                GPIO.output(self.ISP_ENABLE_PIN, GPIO.LOW)
+                GPIO.output(self.ISP_ENABLE_PIN, self._isp_inactive())
+                GPIO.output(self.RESET_PIN, self._reset_active())
+                time.sleep(0.1)
+                GPIO.output(self.RESET_PIN, self._reset_inactive())
             except:
                 pass
     

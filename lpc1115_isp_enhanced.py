@@ -229,42 +229,25 @@ class EnhancedISPProtocol:
 
         The bootloader sends "Synchronized\\r\\n" but due to UART timing,
         this may arrive in multiple fragments (e.g. "Synchron" + "ized\\r\\n").
-        This method accumulates bytes until a complete line is received or
-        the timeout expires.
+        This method uses readline() with the full timeout to ensure all bytes
+        are collected, even if inter-byte gaps exceed the default port timeout.
 
         Returns:
             Complete line (stripped) or None on timeout
         """
-        import time as _time
-        buf = b''
-        deadline = _time.monotonic() + timeout
-
-        while _time.monotonic() < deadline:
-            remaining = deadline - _time.monotonic()
-            if remaining <= 0:
-                break
-
-            old_timeout = self.port.timeout
-            self.port.timeout = min(remaining, 0.5)
-            try:
-                chunk = self.port.read(self.port.in_waiting or 1)
-            except Exception:
-                chunk = b''
-            finally:
-                self.port.timeout = old_timeout
-
-            if chunk:
-                buf += chunk
-                # Check for line terminator
-                if b'\n' in buf:
-                    # Extract the first complete line
-                    line, _ = buf.split(b'\n', 1)
-                    return line.decode('ascii', errors='ignore').strip()
-
-        # Timeout - return whatever we have
-        if buf:
-            return buf.decode('ascii', errors='ignore').strip()
-        return None
+        old_timeout = self.port.timeout
+        self.port.timeout = timeout
+        try:
+            line = self.port.readline()
+            if line:
+                result = line.decode('ascii', errors='ignore').strip()
+                if result:
+                    return result
+            return None
+        except Exception:
+            return None
+        finally:
+            self.port.timeout = old_timeout
 
     def _consume_echo(self, sent_cmd: str) -> None:
         """Consume the echo of the sent command if echo is enabled"""
