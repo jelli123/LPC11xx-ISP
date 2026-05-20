@@ -325,6 +325,11 @@ class LPC11xxFlasher:
                 return True
 
         print("  ✗ Synchronization failed")
+        print("    No response from bootloader. Check:")
+        print(f"    - Is {self.uart_port} the correct port? (Pi Zero 2W: try /dev/ttyS0)")
+        print("    - Are UART TX/RX connected correctly? (TX→RX, RX→TX)")
+        print("    - Is LPC11xx powered and has a working crystal?")
+        print("    - Run 'sudo python3 diagnostic.py' for detailed checks")
         return False
 
     def detect_chip(self) -> bool:

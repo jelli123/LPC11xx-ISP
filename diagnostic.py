@@ -164,39 +164,72 @@ class DiagnosticTool:
         """Test UART connection"""
         print("\n[4] UART/Serial Port")
         print("-" * 50)
-        
-        # Check if port exists
+
+        # Check available serial ports
+        available_ports = []
+        for port_name in ['/dev/ttyAMA0', '/dev/ttyS0', '/dev/serial0', '/dev/serial1']:
+            if Path(port_name).exists():
+                available_ports.append(port_name)
+        if available_ports:
+            self.log_info(f"Available ports: {', '.join(available_ports)}")
+        else:
+            self.log_error("No serial ports found!")
+            return
+
+        # Check configured port
         port_path = Path(self.UART_PORT)
         if port_path.exists():
-            self.log_ok(f"Port {self.UART_PORT} exists")
+            self.log_ok(f"Configured port {self.UART_PORT} exists")
+            # Check if it's a symlink and show target
+            if port_path.is_symlink():
+                target = os.readlink(str(port_path))
+                self.log_info(f"  → symlink to {target}")
         else:
-            self.log_error(f"Port {self.UART_PORT} not found")
-            self.log_info("Check with: ls -la /dev/tty*")
+            self.log_error(f"Configured port {self.UART_PORT} not found")
+            self.log_info(f"Available: {', '.join(available_ports)}")
+            self.log_info("On Pi Zero 2W, GPIO UART is often /dev/ttyS0 unless BT disabled")
             return
-        
+
         # Try to open port
         try:
             self.ser = serial.Serial(
                 port=self.UART_PORT,
                 baudrate=self.UART_BAUDRATE,
                 timeout=1.0,
-                xonxoff=True,   # XON/XOFF flow control (DC1/DC3)
+                xonxoff=False,
                 rtscts=False,
                 dsrdtr=False
             )
             self.log_ok(f"Serial port opened at {self.UART_BAUDRATE} baud")
-            
+
+            # Loopback test hint
+            self.log_info("LOOPBACK TEST: Short GPIO14 (TX) to GPIO15 (RX) to verify port")
+            self.ser.reset_input_buffer()
+            self.ser.write(b'\x55\xAA')
+            self.ser.flush()
+            time.sleep(0.1)
+            loopback = self.ser.read(self.ser.in_waiting)
+            if loopback == b'\x55\xAA':
+                self.log_ok("Loopback detected! TX→RX working (remove jumper for normal use)")
+            elif loopback:
+                hex_str = ' '.join(f'{b:02X}' for b in loopback)
+                self.log_warn(f"Partial loopback: received {hex_str}")
+            else:
+                self.log_info("No loopback (normal if TX/RX not shorted)")
+
+            self.ser.reset_input_buffer()
+
             # Test communication (if we're already in ISP mode)
             self.log_info("Attempting ISP autobaud synchronization...")
-            
+
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
-            
+
             # Send autobaud character '?' — bootloader responds with "Synchronized\r\n"
             self.ser.write(b'?')
             self.ser.flush()
-            
-            time.sleep(0.3)
+
+            time.sleep(0.5)
             response = self.ser.readline().decode('ascii', errors='ignore').strip()
             
             if response == "Synchronized":
