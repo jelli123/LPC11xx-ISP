@@ -482,6 +482,51 @@ class LPC11xxFlasher:
 
     # ── Operation: Write HEX file to flash ───────────────────────────
 
+    def _patch_vector_checksum(self, hex_data: IntelHex) -> None:
+        """Patch the Cortex-M0 vector table checksum at offset 0x1C.
+
+        Per LPC11xx UM10398 Section 26.3.3 "Criterion for Valid User Code":
+        The bootloader sums the first 8 entries of the Cortex-M0 vector
+        table (32 bytes at 0x00000000). If the result is 0, the firmware
+        is considered valid and executed after reset. Otherwise the chip
+        stays in the ISP bootloader.
+
+        Entry 7 (offset 0x1C) is reserved and must be set to the 2's
+        complement of the sum of entries 0..6. FlashMagic and other
+        flashers patch this automatically.
+        """
+        # Read entries 0..6 (28 bytes) from hex file as little-endian uint32
+        vectors = []
+        for i in range(7):
+            addr = i * 4
+            word = (hex_data[addr] |
+                    (hex_data[addr + 1] << 8) |
+                    (hex_data[addr + 2] << 16) |
+                    (hex_data[addr + 3] << 24))
+            vectors.append(word)
+
+        # Compute 2's complement checksum
+        total = sum(vectors) & 0xFFFFFFFF
+        checksum = (-total) & 0xFFFFFFFF
+
+        # Check if already correctly set
+        existing = (hex_data[0x1C] |
+                    (hex_data[0x1D] << 8) |
+                    (hex_data[0x1E] << 16) |
+                    (hex_data[0x1F] << 24))
+
+        if existing == checksum:
+            print(f"  Vector checksum already valid: 0x{checksum:08X}")
+            return
+
+        # Patch entry 7 (offset 0x1C)
+        hex_data[0x1C] = checksum & 0xFF
+        hex_data[0x1D] = (checksum >> 8) & 0xFF
+        hex_data[0x1E] = (checksum >> 16) & 0xFF
+        hex_data[0x1F] = (checksum >> 24) & 0xFF
+
+        print(f"  Patched vector checksum at 0x1C: 0x{existing:08X} → 0x{checksum:08X}")
+
     def cmd_write(self, hex_file: str, no_verify: bool = False) -> bool:
         """Write Intel Hex file to flash."""
         try:
@@ -500,6 +545,14 @@ class LPC11xxFlasher:
             if max_addr >= self.flash_size:
                 print(f"  ✗ Data exceeds flash size ({self.flash_size // 1024} KB)")
                 return False
+
+            # Patch the Cortex-M0 vector table checksum at offset 0x1C.
+            # Per UM10398 Section 26.3.3, the bootloader only starts user code
+            # if the sum of the first 8 vector table entries equals 0.
+            # Entry 7 (offset 0x1C) is reserved for this 2's complement checksum.
+            # Without it, the chip stays in the bootloader after reset.
+            if min_addr == 0 and max_addr >= 0x1F:
+                self._patch_vector_checksum(hex_data)
 
             flash_mgr = FlashMemoryManager(self.isp,
                                            flash_size=self.flash_size,
