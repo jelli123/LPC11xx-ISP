@@ -171,15 +171,16 @@ class LPC11xxFlasher:
         Enter ISP mode on LPC11xx.
 
         The LPC11xx enters ISP mode when PIO0_1 is LOW at reset release.
+        ISP_Enable remains active (PIO0_1 held LOW) throughout the entire
+        ISP session to ensure stable operation. It is released only in
+        exit_isp_mode().
 
         Sequence:
           1. ISP_Enable active  → PIO0_1 LOW (request ISP)
           2. Reset active       → /RESET LOW (assert reset)
-          3. Wait for reset
-          4. Reset inactive     → /RESET HIGH (release reset)
+          3. Reset inactive     → /RESET HIGH (release reset)
              Chip samples PIO0_1=LOW → boots into ISP bootloader
-          5. ISP_Enable inactive → PIO0_1 HIGH (clean state)
-             ISP bootloader is already running, PIO0_1 no longer sampled.
+          4. Wait for bootloader init (~500ms)
         """
         print("\nEntering ISP mode...")
 
@@ -198,14 +199,12 @@ class LPC11xxFlasher:
             #         Chip samples PIO0_1=LOW → enters ISP bootloader
             print("  3. Reset → /RESET HIGH (release reset, enter ISP)")
             GPIO.output(self.reset_pin, self._reset_inactive())
-            time.sleep(0.5)  # Wait for bootloader UART init before releasing PIO0_1
 
-            # Step 4: Release ISP_Enable (clean state, bootloader already running)
-            print("  4. ISP_Enable → PIO0_1 HIGH (clean state)")
-            GPIO.output(self.isp_enable_pin, self._isp_inactive())
-            time.sleep(0.01)
+            # Step 4: Wait for bootloader to initialize UART
+            print("  4. Waiting for bootloader init...")
+            time.sleep(0.5)
 
-            print("  ✓ ISP mode entered")
+            print("  ✓ ISP mode entered (ISP_Enable held active)")
             return True
 
         except Exception as e:
@@ -294,7 +293,7 @@ class LPC11xxFlasher:
 
     def _re_enter_isp(self):
         """Re-enter ISP mode silently (for sync retries).
-        Asserts ISP_Enable, resets, releases, then releases ISP_Enable.
+        Asserts ISP_Enable, resets, releases. ISP_Enable stays active.
         """
         GPIO.output(self.isp_enable_pin, self._isp_active())
         time.sleep(0.01)
@@ -302,8 +301,6 @@ class LPC11xxFlasher:
         time.sleep(0.1)
         GPIO.output(self.reset_pin, self._reset_inactive())
         time.sleep(0.5)
-        GPIO.output(self.isp_enable_pin, self._isp_inactive())
-        time.sleep(0.01)
 
     def synchronize(self) -> bool:
         """Perform ISP synchronization handshake."""

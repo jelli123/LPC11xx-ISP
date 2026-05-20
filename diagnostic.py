@@ -262,12 +262,7 @@ class DiagnosticTool:
             else:
                 print("    ✗ Reset not at expected level")
 
-            # Step 4: ISP_Enable inactive → PIO0_1 HIGH (clean state)
-            print("  Step 4: ISP_Enable → PIO0_1 HIGH (clean state)")
-            GPIO.output(self.ISP_ENABLE_PIN, self._isp_inactive())
-            time.sleep(0.01)
-
-            self.log_ok("ISP mode sequence completed")
+            self.log_ok("ISP mode sequence completed (ISP_Enable held active)")
 
             # Check UART after entering ISP mode
             print("\n  Checking UART communication after ISP entry...")
