@@ -1020,7 +1020,9 @@ class FlashMemoryManager:
         Returns:
             True if successful
         """
+        import sys as _sys
         print(f"    Writing {len(data)} bytes to 0x{flash_addr:08X}")
+        _sys.stdout.flush()
 
         # Pad data to minimum write size
         if len(data) % self.write_size != 0:
@@ -1033,10 +1035,18 @@ class FlashMemoryManager:
             if size <= len(data) and len(data) % size == 0:
                 copy_size = size
 
+        total = len(data)
+
         # Write in chunks
         for offset in range(0, len(data), copy_size):
             chunk = data[offset:offset + copy_size]
             chunk_flash_addr = flash_addr + offset
+
+            # Progress indicator (suppress in verbose mode)
+            if not self.isp.verbose:
+                pct = (offset * 100) // total
+                print(f"\r      Progress: {pct}% (0x{chunk_flash_addr:08X})", end='')
+                _sys.stdout.flush()
 
             # Get sectors for this chunk
             start_sector, end_sector = self.get_sectors_for_range(
@@ -1046,26 +1056,29 @@ class FlashMemoryManager:
 
             # Write chunk to RAM
             if not self.isp.write_to_ram(self.ram_buffer_addr, chunk):
-                print(f"      Error: Failed to write to RAM")
+                print(f"\n      Error: Failed to write to RAM")
                 return False
 
             # Unlock
             if not self.isp.unlock():
-                print(f"      Error: Failed to unlock")
+                print(f"\n      Error: Failed to unlock")
                 return False
 
             # Prepare sectors
             if not self.isp.prepare_sectors(start_sector, end_sector):
-                print(f"      Error: Failed to prepare sectors {start_sector}-{end_sector}")
+                print(f"\n      Error: Failed to prepare sectors {start_sector}-{end_sector}")
                 return False
 
             # Copy RAM to Flash
             if not self.isp.copy_ram_to_flash(chunk_flash_addr, self.ram_buffer_addr, len(chunk)):
-                print(f"      Error: Failed to copy to flash at 0x{chunk_flash_addr:08X}")
+                print(f"\n      Error: Failed to copy to flash at 0x{chunk_flash_addr:08X}")
                 return False
 
-            print(f"      Programmed 0x{chunk_flash_addr:08X} ({len(chunk)} bytes)")
+            if self.isp.verbose:
+                print(f"      Programmed 0x{chunk_flash_addr:08X} ({len(chunk)} bytes)")
 
+        if not self.isp.verbose:
+            print(f"\r      Programmed {total} bytes                       ")
         return True
 
     def verify_flash_data(self, flash_addr: int, expected_data: bytes) -> bool:
@@ -1095,10 +1108,11 @@ class FlashMemoryManager:
             # Align to 4 bytes
             read_len = ((remaining + 3) // 4) * 4
 
-            # Progress indicator
-            pct = (offset * 100) // total_len
-            print(f"\r      Progress: {pct}% (0x{flash_addr + offset:08X})", end='')
-            _sys.stdout.flush()
+            # Progress indicator (suppress in verbose mode to avoid mixing with TX/RX log)
+            if not self.isp.verbose:
+                pct = (offset * 100) // total_len
+                print(f"\r      Progress: {pct}% (0x{flash_addr + offset:08X})", end='')
+                _sys.stdout.flush()
 
             data = self.isp.read_memory(flash_addr + offset, read_len)
             if data is None:
@@ -1114,14 +1128,17 @@ class FlashMemoryManager:
                 for i in range(remaining):
                     if expected_chunk[i] != actual_chunk[i]:
                         addr = flash_addr + offset + i
-                        print(f"      Mismatch at 0x{addr:08X}: "
+                        print(f"\n      Mismatch at 0x{addr:08X}: "
                               f"expected 0x{expected_chunk[i]:02X}, "
                               f"got 0x{actual_chunk[i]:02X}")
                         return False
 
             offset += remaining
 
-        print(f"\r      Verified OK ({total_len} bytes match)          ")
+        if not self.isp.verbose:
+            print(f"\r      Verified OK ({total_len} bytes match)               ")
+        else:
+            print(f"      Verified OK ({total_len} bytes match)")
         return True
 
     def read_flash_data(self, flash_addr: int, length: int) -> Optional[bytes]:

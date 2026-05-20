@@ -525,9 +525,11 @@ class LPC11xxFlasher:
             # Program
             segments = hex_data.segments()
             print(f"\nProgramming {len(segments)} segment(s)...")
+            sys.stdout.flush()
             for seg_start, seg_end in segments:
-                data = bytes(hex_data[seg_start:seg_end])
+                data = hex_data.tobinarray(start=seg_start, size=seg_end - seg_start).tobytes()
                 print(f"  0x{seg_start:08X} - 0x{seg_end:08X} ({len(data)} bytes)")
+                sys.stdout.flush()
                 if not flash_mgr.write_flash_data(seg_start, data):
                     print(f"  ✗ Programming failed at 0x{seg_start:08X}")
                     return False
@@ -535,9 +537,10 @@ class LPC11xxFlasher:
 
             # Verify
             if not no_verify:
-                print("\nVerifying (Command: M)...")
+                print("\nVerifying...")
+                sys.stdout.flush()
                 for seg_start, seg_end in segments:
-                    data = bytes(hex_data[seg_start:seg_end])
+                    data = hex_data.tobinarray(start=seg_start, size=seg_end - seg_start).tobytes()
                     if not flash_mgr.verify_flash_data(seg_start, data):
                         print(f"  ✗ Verification failed")
                         return False
