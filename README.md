@@ -33,17 +33,22 @@ sudo raspi-config   # Interface → Serial → Disable console, Enable hardware
 chmod +x setup.sh
 sudo ./setup.sh
 
-# 3. Verify hardware
-sudo python3 diagnostic.py
+# 3. Allow GPIO/serial access without sudo (one-time, then re-login)
+sudo usermod -a -G gpio,dialout $USER
 
-# 4. Flash
-sudo python3 lpc1115_flasher.py write firmware.hex
+# 4. Verify hardware
+python3 diagnostic.py
+
+# 5. Flash
+python3 lpc1115_flasher.py write firmware.hex
 ```
+
+> **Hinweis:** `sudo` ist nur nötig, wenn der Benutzer nicht in den Gruppen `gpio` und `dialout` ist. Nach `usermod` + Re-Login funktioniert alles ohne `sudo`.
 
 ## Usage
 
 ```bash
-sudo python3 lpc1115_flasher.py [options] <operation> [args]
+python3 lpc1115_flasher.py [options] <operation> [args]
 ```
 
 ### Options
@@ -57,25 +62,25 @@ sudo python3 lpc1115_flasher.py [options] <operation> [args]
 
 ```bash
 # Write hex file (with automatic verify)
-sudo python3 lpc1115_flasher.py write firmware.hex
-sudo python3 lpc1115_flasher.py write firmware.hex --no-verify
+python3 lpc1115_flasher.py write firmware.hex
+python3 lpc1115_flasher.py write firmware.hex --no-verify
 
 # Read flash
-sudo python3 lpc1115_flasher.py read readback.hex
-sudo python3 lpc1115_flasher.py read readback.hex --start 0x1000 --length 4096
+python3 lpc1115_flasher.py read readback.hex
+python3 lpc1115_flasher.py read readback.hex --start 0x1000 --length 4096
 
 # Verify flash against file
-sudo python3 lpc1115_flasher.py verify firmware.hex
+python3 lpc1115_flasher.py verify firmware.hex
 
 # Erase flash
-sudo python3 lpc1115_flasher.py erase
-sudo python3 lpc1115_flasher.py erase --start-sector 0 --end-sector 3
+python3 lpc1115_flasher.py erase
+python3 lpc1115_flasher.py erase --start-sector 0 --end-sector 3
 
 # Blank check
-sudo python3 lpc1115_flasher.py blankcheck
+python3 lpc1115_flasher.py blankcheck
 
 # Chip info
-sudo python3 lpc1115_flasher.py id
+python3 lpc1115_flasher.py id
 ```
 
 ## Configuration

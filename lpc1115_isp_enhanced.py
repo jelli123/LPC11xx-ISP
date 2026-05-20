@@ -1071,6 +1071,7 @@ class FlashMemoryManager:
     def verify_flash_data(self, flash_addr: int, expected_data: bytes) -> bool:
         """
         Verify flash data using the Compare command.
+        Works in chunks to fit within available RAM buffer.
 
         Args:
             flash_addr: Flash address to verify
@@ -1079,28 +1080,43 @@ class FlashMemoryManager:
         Returns:
             True if verified
         """
-        print(f"    Verifying {len(expected_data)} bytes at 0x{flash_addr:08X}")
+        total_len = len(expected_data)
+        print(f"    Verifying {total_len} bytes at 0x{flash_addr:08X}")
 
-        # Pad to word alignment
-        verify_len = len(expected_data)
-        if verify_len % 4 != 0:
-            verify_len = ((verify_len + 3) // 4) * 4
+        # Available RAM buffer: from ram_buffer_addr to end of RAM
+        # LPC1115: RAM ends at 0x10002000, buffer starts at 0x10000300
+        # Max chunk = ram_size - 0x300, rounded down to multiple of 4
+        max_chunk = ((self.ram_size - 0x300) // 4) * 4
+        # Use smaller chunks for reliability (256 bytes matches read chunk)
+        chunk_size = min(max_chunk, 1024)
 
-        # Write expected data to RAM for comparison
-        padded = expected_data + b'\xFF' * (verify_len - len(expected_data))
-        if not self.isp.write_to_ram(self.ram_buffer_addr, padded):
-            print(f"      Error: Failed to write verification data to RAM")
-            return False
+        offset = 0
+        while offset < total_len:
+            remaining = min(chunk_size, total_len - offset)
+            # Pad to word alignment
+            verify_len = ((remaining + 3) // 4) * 4
 
-        # Use Compare command
-        match, offset = self.isp.compare(flash_addr, self.ram_buffer_addr, verify_len)
+            chunk = expected_data[offset:offset + remaining]
+            padded = chunk + b'\xFF' * (verify_len - len(chunk))
 
-        if match:
-            print(f"      Verified OK ({len(expected_data)} bytes match)")
-            return True
-        else:
-            print(f"      Verification failed at offset {offset}")
-            return False
+            # Write expected data to RAM for comparison
+            if not self.isp.write_to_ram(self.ram_buffer_addr, padded):
+                print(f"      Error: Failed to write verification data to RAM at offset 0x{offset:X}")
+                return False
+
+            # Use Compare command
+            match, mismatch_offset = self.isp.compare(
+                flash_addr + offset, self.ram_buffer_addr, verify_len)
+
+            if not match:
+                abs_offset = offset + (mismatch_offset if mismatch_offset else 0)
+                print(f"      Verification failed at offset 0x{abs_offset:X}")
+                return False
+
+            offset += remaining
+
+        print(f"      Verified OK ({total_len} bytes match)")
+        return True
 
     def read_flash_data(self, flash_addr: int, length: int) -> Optional[bytes]:
         """

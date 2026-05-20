@@ -78,6 +78,15 @@ else
     echo "    Note: You may need to log out and back in"
 fi
 
+if groups | grep -q dialout; then
+    echo "  ✓ User is in dialout group"
+else
+    echo "  ⚠ User is not in dialout group"
+    echo "    Running: sudo usermod -a -G dialout $USER"
+    sudo usermod -a -G dialout $USER
+    echo "    Note: You may need to log out and back in"
+fi
+
 # Install Python requirements system-wide (no venv needed)
 echo ""
 echo "Installing Python requirements (system-wide)..."
@@ -111,7 +120,9 @@ echo ""
 echo "  3. Place your Intel Hex file in the same directory"
 echo ""
 echo "  4. Run the flasher:"
-echo "     sudo python3 lpc1115_flasher.py write your_program.hex"
+echo "     python3 lpc1115_flasher.py write your_program.hex"
+echo ""
+echo "  (sudo is NOT needed if user is in gpio+dialout groups)"
 echo ""
 echo "  Offline deployment (no internet required):"
 echo "     Run 'build_standalone.sh' on a machine with internet to create"

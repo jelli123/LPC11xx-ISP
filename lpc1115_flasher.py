@@ -571,6 +571,7 @@ class LPC11xxFlasher:
             chunk_size = 256
             hex_data = IntelHex()
             bytes_read = 0
+            bytes_stored = 0
 
             for offset in range(0, length, chunk_size):
                 addr = start + offset
@@ -583,18 +584,33 @@ class LPC11xxFlasher:
                     print(f"  ✗ Read failed at 0x{addr:08X}")
                     return False
 
-                for i in range(remaining):
-                    hex_data[addr + i] = data[i]
+                # Only store non-empty (non-0xFF) bytes to keep hex file small
+                chunk = data[:remaining]
+                if chunk != b'\xFF' * remaining:
+                    for i in range(remaining):
+                        if chunk[i] != 0xFF:
+                            hex_data[addr + i] = chunk[i]
+                        # Isolated 0xFF within non-empty regions: store them too
+                        # to preserve data integrity. Only skip fully-empty chunks.
+                    # Actually, store entire chunk if it's not all-FF
+                    for i in range(remaining):
+                        hex_data[addr + i] = chunk[i]
+                    bytes_stored += remaining
 
                 bytes_read += remaining
                 if self.verbose:
-                    print(f"  Read 0x{addr:08X} ({remaining} bytes)")
+                    first_bytes = ' '.join(f'{b:02X}' for b in chunk[:16])
+                    suffix = '...' if remaining > 16 else ''
+                    print(f"  Read 0x{addr:08X} ({remaining} bytes): {first_bytes}{suffix}")
 
             # Save to file
             print(f"\nSaving to {hex_file}...")
             hex_data.write_hex_file(hex_file)
 
-            print(f"\n✓ Read {bytes_read} bytes to {hex_file}")
+            skipped = bytes_read - bytes_stored
+            print(f"\n✓ Read {bytes_read} bytes, stored {bytes_stored} bytes to {hex_file}")
+            if skipped > 0:
+                print(f"  ({skipped} bytes skipped — empty/erased 0xFF regions)")
             return True
 
         except Exception as e:
