@@ -1070,8 +1070,9 @@ class FlashMemoryManager:
 
     def verify_flash_data(self, flash_addr: int, expected_data: bytes) -> bool:
         """
-        Verify flash data using the Compare command.
-        Works in chunks to fit within available RAM buffer.
+        Verify flash data by reading it back and comparing locally.
+        This avoids write-to-RAM + Compare (which requires UU upload
+        and has RAM size constraints).
 
         Args:
             flash_addr: Flash address to verify
@@ -1083,35 +1084,33 @@ class FlashMemoryManager:
         total_len = len(expected_data)
         print(f"    Verifying {total_len} bytes at 0x{flash_addr:08X}")
 
-        # Available RAM buffer: from ram_buffer_addr to end of RAM
-        # LPC1115: RAM ends at 0x10002000, buffer starts at 0x10000300
-        # Max chunk = ram_size - 0x300, rounded down to multiple of 4
-        max_chunk = ((self.ram_size - 0x300) // 4) * 4
-        # Use smaller chunks for reliability (256 bytes matches read chunk)
-        chunk_size = min(max_chunk, 1024)
-
+        # Read back in 256-byte chunks (same as read command)
+        chunk_size = 256
         offset = 0
+
         while offset < total_len:
             remaining = min(chunk_size, total_len - offset)
-            # Pad to word alignment
-            verify_len = ((remaining + 3) // 4) * 4
+            # Align to 4 bytes
+            read_len = ((remaining + 3) // 4) * 4
 
-            chunk = expected_data[offset:offset + remaining]
-            padded = chunk + b'\xFF' * (verify_len - len(chunk))
-
-            # Write expected data to RAM for comparison
-            if not self.isp.write_to_ram(self.ram_buffer_addr, padded):
-                print(f"      Error: Failed to write verification data to RAM at offset 0x{offset:X}")
+            data = self.isp.read_memory(flash_addr + offset, read_len)
+            if data is None:
+                print(f"      Error: Read failed at 0x{flash_addr + offset:08X}")
                 return False
 
-            # Use Compare command
-            match, mismatch_offset = self.isp.compare(
-                flash_addr + offset, self.ram_buffer_addr, verify_len)
+            # Compare
+            expected_chunk = expected_data[offset:offset + remaining]
+            actual_chunk = data[:remaining]
 
-            if not match:
-                abs_offset = offset + (mismatch_offset if mismatch_offset else 0)
-                print(f"      Verification failed at offset 0x{abs_offset:X}")
-                return False
+            if expected_chunk != actual_chunk:
+                # Find first mismatch
+                for i in range(remaining):
+                    if expected_chunk[i] != actual_chunk[i]:
+                        addr = flash_addr + offset + i
+                        print(f"      Mismatch at 0x{addr:08X}: "
+                              f"expected 0x{expected_chunk[i]:02X}, "
+                              f"got 0x{actual_chunk[i]:02X}")
+                        return False
 
             offset += remaining
 
