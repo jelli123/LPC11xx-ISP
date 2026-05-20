@@ -636,9 +636,12 @@ class LPC11xxFlasher:
 
             segments = hex_data.segments()
             print(f"Verifying {len(segments)} segment(s)...")
+            sys.stdout.flush()
 
             for seg_start, seg_end in segments:
                 data = bytes(hex_data[seg_start:seg_end])
+                print(f"  Segment 0x{seg_start:08X} - 0x{seg_end-1:08X} ({len(data)} bytes)")
+                sys.stdout.flush()
                 if not flash_mgr.verify_flash_data(seg_start, data):
                     print(f"\n✗ Verification FAILED")
                     return False

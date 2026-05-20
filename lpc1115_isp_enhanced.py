@@ -1081,8 +1081,10 @@ class FlashMemoryManager:
         Returns:
             True if verified
         """
+        import sys as _sys
         total_len = len(expected_data)
         print(f"    Verifying {total_len} bytes at 0x{flash_addr:08X}")
+        _sys.stdout.flush()
 
         # Read back in 256-byte chunks (same as read command)
         chunk_size = 256
@@ -1093,9 +1095,14 @@ class FlashMemoryManager:
             # Align to 4 bytes
             read_len = ((remaining + 3) // 4) * 4
 
+            # Progress indicator
+            pct = (offset * 100) // total_len
+            print(f"\r      Progress: {pct}% (0x{flash_addr + offset:08X})", end='')
+            _sys.stdout.flush()
+
             data = self.isp.read_memory(flash_addr + offset, read_len)
             if data is None:
-                print(f"      Error: Read failed at 0x{flash_addr + offset:08X}")
+                print(f"\n      Error: Read failed at 0x{flash_addr + offset:08X}")
                 return False
 
             # Compare
@@ -1114,7 +1121,7 @@ class FlashMemoryManager:
 
             offset += remaining
 
-        print(f"      Verified OK ({total_len} bytes match)")
+        print(f"\r      Verified OK ({total_len} bytes match)          ")
         return True
 
     def read_flash_data(self, flash_addr: int, length: int) -> Optional[bytes]:
