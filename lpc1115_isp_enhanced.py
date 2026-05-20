@@ -250,51 +250,45 @@ class EnhancedISPProtocol:
 
     def _read_sync_response(self, timeout: float = 3.0) -> Optional[str]:
         """
-        Read the synchronization response with robust byte accumulation.
+        Read the synchronization response reliably.
 
-        The bootloader sends "Synchronized\\r\\n" but due to UART timing and
-        autobaud calibration, bytes may arrive with gaps or be partially lost
-        on the first attempt. This method accumulates all incoming bytes and
-        searches for "Synchronized" in the stream.
+        Uses inter_byte_timeout to let the kernel UART driver collect all bytes
+        of a burst before returning. This avoids the race condition where reading
+        byte-by-byte in Python can miss bytes that arrive between read() calls.
+
+        Strategy:
+          - Set a long timeout for the FIRST byte (wait for bootloader)
+          - Set a short inter_byte_timeout so read() returns when a gap is detected
+          - Read a large buffer in ONE call — the kernel collects all bytes
 
         Returns:
-            "Synchronized" if found in stream, or whatever was received (stripped), or None
+            "Synchronized" if found in received data, or whatever was received, or None
         """
-        buf = b''
-        deadline = time.time() + timeout
-
         old_timeout = self.port.timeout
+        old_inter_byte_timeout = self.port.inter_byte_timeout
         try:
-            while time.time() < deadline:
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    break
-                # Use short reads to accumulate without missing bytes
-                self.port.timeout = min(remaining, 0.5)
-                chunk = self.port.read(max(1, self.port.in_waiting))
-                if chunk:
-                    buf += chunk
-                    self._log_rx(chunk)
-                    # Check if we have a complete "Synchronized" in the buffer
-                    decoded = buf.decode('ascii', errors='ignore')
-                    if "Synchronized" in decoded:
-                        return "Synchronized"
-                    # If we have a line terminator, return whatever we got
-                    if b'\n' in buf:
-                        line = buf.split(b'\n')[0]
-                        result = line.decode('ascii', errors='ignore').strip()
-                        if result:
-                            return result
-                        # Empty line (just \r\n), continue reading
-                        buf = buf.split(b'\n', 1)[1]
+            # inter_byte_timeout: if no new byte arrives within this time,
+            # read() returns what it has. At 115200 baud, one byte takes ~87µs,
+            # so 50ms is very generous for inter-byte gaps.
+            self.port.timeout = timeout
+            self.port.inter_byte_timeout = 0.05
+
+            # Read up to 100 bytes — will return when:
+            #   - 100 bytes received, OR
+            #   - 50ms gap between bytes (message complete), OR
+            #   - timeout seconds elapsed (no response at all)
+            data = self.port.read(100)
+
+            if data:
+                self._log_rx(data)
+                decoded = data.decode('ascii', errors='ignore').strip()
+                if "Synchronized" in decoded:
+                    return "Synchronized"
+                return decoded if decoded else None
+            return None
         finally:
             self.port.timeout = old_timeout
-
-        # Timeout - return whatever we have
-        if buf:
-            self._log_rx(buf)
-            return buf.decode('ascii', errors='ignore').strip()
-        return None
+            self.port.inter_byte_timeout = old_inter_byte_timeout
 
     def _consume_echo(self, sent_cmd: str) -> None:
         """Consume the echo of the sent command if echo is enabled"""
