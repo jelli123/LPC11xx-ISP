@@ -639,8 +639,10 @@ class LPC11xxFlasher:
             sys.stdout.flush()
 
             for seg_start, seg_end in segments:
-                data = bytes(hex_data[seg_start:seg_end])
-                print(f"  Segment 0x{seg_start:08X} - 0x{seg_end-1:08X} ({len(data)} bytes)")
+                print(f"  Loading segment 0x{seg_start:08X} - 0x{seg_end-1:08X}...")
+                sys.stdout.flush()
+                data = hex_data.tobinarray(start=seg_start, size=seg_end - seg_start).tobytes()
+                print(f"  Segment loaded: {len(data)} bytes")
                 sys.stdout.flush()
                 if not flash_mgr.verify_flash_data(seg_start, data):
                     print(f"\n✗ Verification FAILED")
