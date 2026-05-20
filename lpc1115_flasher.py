@@ -171,16 +171,17 @@ class LPC11xxFlasher:
         Enter ISP mode on LPC11xx.
 
         The LPC11xx enters ISP mode when PIO0_1 is LOW at reset release.
-        ISP_Enable remains active (PIO0_1 held LOW) throughout the entire
-        ISP session to ensure stable operation. It is released only in
-        exit_isp_mode().
+        PIO0_1 must be released shortly after reset because the ISP bootloader
+        may reconfigure PIO0_1 as an output (bus contention if held externally).
 
         Sequence:
           1. ISP_Enable active  → PIO0_1 LOW (request ISP)
           2. Reset active       → /RESET LOW (assert reset)
           3. Reset inactive     → /RESET HIGH (release reset)
              Chip samples PIO0_1=LOW → boots into ISP bootloader
-          4. Wait for bootloader init (~500ms)
+          4. Short delay for pin sampling
+          5. ISP_Enable inactive → PIO0_1 released (avoid bus contention)
+          6. Wait for bootloader UART init
         """
         print("\nEntering ISP mode...")
 
@@ -199,12 +200,18 @@ class LPC11xxFlasher:
             #         Chip samples PIO0_1=LOW → enters ISP bootloader
             print("  3. Reset → /RESET HIGH (release reset, enter ISP)")
             GPIO.output(self.reset_pin, self._reset_inactive())
+            time.sleep(0.1)  # PIO0_1 is sampled within first few µs
 
-            # Step 4: Wait for bootloader to initialize UART
-            print("  4. Waiting for bootloader init...")
+            # Step 4: Release ISP_Enable to avoid bus contention
+            #         (bootloader may reconfigure PIO0_1 as output)
+            print("  4. ISP_Enable → PIO0_1 released (avoid contention)")
+            GPIO.output(self.isp_enable_pin, self._isp_inactive())
+
+            # Step 5: Wait for bootloader to initialize UART
+            print("  5. Waiting for bootloader UART init...")
             time.sleep(0.5)
 
-            print("  ✓ ISP mode entered (ISP_Enable held active)")
+            print("  ✓ ISP mode entered")
             return True
 
         except Exception as e:
@@ -293,14 +300,16 @@ class LPC11xxFlasher:
 
     def _re_enter_isp(self):
         """Re-enter ISP mode silently (for sync retries).
-        Asserts ISP_Enable, resets, releases. ISP_Enable stays active.
+        Full ISP entry cycle including releasing ISP_Enable after sampling.
         """
         GPIO.output(self.isp_enable_pin, self._isp_active())
         time.sleep(0.01)
         GPIO.output(self.reset_pin, self._reset_active())
         time.sleep(0.1)
         GPIO.output(self.reset_pin, self._reset_inactive())
-        time.sleep(0.5)
+        time.sleep(0.1)  # Let PIO0_1 be sampled
+        GPIO.output(self.isp_enable_pin, self._isp_inactive())
+        time.sleep(0.5)  # Wait for bootloader UART init
 
     def synchronize(self) -> bool:
         """Perform ISP synchronization handshake."""

@@ -335,33 +335,18 @@ class EnhancedISPProtocol:
         self.port.reset_input_buffer()
         self.port.reset_output_buffer()
 
-        # Step 1: Send '?' for autobaud detection.
-        # The LPC bootloader uses the '?' (0x3F) character to calibrate its baud
-        # rate. On the first attempt the autobaud may not lock correctly, so we
-        # send multiple '?' with short pauses. The bootloader ignores extra '?'
-        # once it has locked and will respond with "Synchronized" when ready.
-        response = None
-        for i in range(5):
-            self._log_tx(b'?')
-            self.port.write(b'?')
-            self.port.flush()
-            time.sleep(0.1)
+        # Step 1: Send a single '?' for autobaud detection.
+        # The LPC bootloader uses the '?' (0x3F) character to calibrate its
+        # baud rate. Per UM10398: the auto-baud routine measures the bit time
+        # from the start bit to determine the baud rate. Only ONE '?' should
+        # be sent per attempt — multiple '?' can confuse the auto-baud if they
+        # arrive while it's still measuring.
+        self._log_tx(b'?')
+        self.port.write(b'?')
+        self.port.flush()
 
-            # Check if anything has arrived
-            response = self._read_sync_response(timeout=0.5)
-            if response == "Synchronized":
-                break
-            # If partial or nothing, try again
-            if response and "Synchronized" in response:
-                response = "Synchronized"
-                break
-
-        # If short attempts didn't work, do one final long wait
-        if response != "Synchronized":
-            self._log_tx(b'?')
-            self.port.write(b'?')
-            self.port.flush()
-            response = self._read_sync_response(timeout=2.0)
+        # Wait for "Synchronized" response (bootloader needs time to init)
+        response = self._read_sync_response(timeout=3.0)
 
         # Step 2: Check response
         if response != "Synchronized":
