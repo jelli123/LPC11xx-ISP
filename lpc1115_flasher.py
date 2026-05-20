@@ -30,6 +30,7 @@ import serial
 import argparse
 import configparser
 import os
+import subprocess
 from pathlib import Path
 from typing import Tuple, List, Optional
 
@@ -263,14 +264,51 @@ class LPC11xxFlasher:
             print(f"  ✗ Reset failed: {e}")
             return False
 
+    def _check_port_in_use(self) -> bool:
+        """Check if another process already has the serial port open.
+        Returns True if port is free, False if in use."""
+        try:
+            result = subprocess.run(
+                ['fuser', self.uart_port],
+                capture_output=True, text=True, timeout=5
+            )
+            pids = result.stdout.strip()
+            if pids:
+                print(f"  \u2717 Port {self.uart_port} is already open by PID(s): {pids}")
+                # Try to identify the process(es)
+                for pid in pids.split():
+                    try:
+                        ps = subprocess.run(
+                            ['ps', '-p', pid.strip(), '-o', 'comm='],
+                            capture_output=True, text=True, timeout=5
+                        )
+                        name = ps.stdout.strip()
+                        if name:
+                            print(f"    PID {pid.strip()}: {name}")
+                    except Exception:
+                        pass
+                print(f"    Stop the conflicting service, e.g.:")
+                print(f"      sudo systemctl stop knxd")
+                print(f"      sudo fuser -k {self.uart_port}")
+                return False
+        except FileNotFoundError:
+            pass  # fuser not available, skip check
+        except Exception:
+            pass  # non-critical check, proceed anyway
+        return True
+
     def open_serial(self) -> bool:
         """Open serial port exclusively for ISP communication.
 
-        Uses exclusive=True (TIOCEXCL) to prevent conflicts with other
-        processes using the same port (e.g. knxd, getty).
+        Checks for conflicting processes first (fuser), then opens with
+        exclusive=True (TIOCEXCL) to block future access.
         """
         if self.verbose:
             print(f"\nOpening serial port {self.uart_port} @ {self.uart_baudrate}...")
+
+        if not self._check_port_in_use():
+            return False
+
         try:
             self.serial_port = serial.Serial(
                 port=self.uart_port,
@@ -333,7 +371,7 @@ class LPC11xxFlasher:
                 self.serial_port.reset_output_buffer()
 
             if self.isp.synchronize():
-                self.serial_port.xonxoff = True
+
                 print("  ✓ Synchronized")
                 return True
 

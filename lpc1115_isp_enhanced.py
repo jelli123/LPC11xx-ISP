@@ -14,6 +14,7 @@ import sys
 import time
 import struct
 import binascii
+import serial
 from typing import Optional, Tuple, List
 
 
@@ -646,6 +647,7 @@ class EnhancedISPProtocol:
                 while pos < block_end:
                     chunk = data[pos:pos + 45]
                     encoded = binascii.b2a_uu(chunk)
+                    self._log_tx(encoded)
                     self.port.write(encoded)
                     self.port.flush()
 
@@ -675,6 +677,23 @@ class EnhancedISPProtocol:
             offset = block_end
 
         return True
+
+    def _read_line_raw(self, timeout: float = 2.0) -> Optional[bytes]:
+        """Read a raw line from port with explicit timeout and logging."""
+        old_timeout = self.port.timeout
+        self.port.timeout = timeout
+        try:
+            line = self.port.readline()
+            if line:
+                self._log_rx(line)
+                return line
+            return None
+        except serial.SerialException as e:
+            if self.verbose:
+                print(f"    Serial error: {e}")
+            return None
+        finally:
+            self.port.timeout = old_timeout
 
     def _receive_uuencoded_data(self, length: int, max_retries: int = 3) -> Optional[bytes]:
         """
@@ -710,8 +729,10 @@ class EnhancedISPProtocol:
                     lines_received = 0
 
                 while lines_received < 20:
-                    line = self.port.readline()
+                    line = self._read_line_raw(timeout=2.0)
                     if not line:
+                        if self.verbose:
+                            print(f"    UU receive: timeout after {lines_received} lines, {len(data)+len(block_data)}/{length} bytes")
                         return None
 
                     line_stripped = line.strip()
@@ -730,15 +751,19 @@ class EnhancedISPProtocol:
                                 self.send_command("OK")
                                 block_ok = True
                             else:
+                                if self.verbose:
+                                    print(f"    UU checksum mismatch: got {received_checksum}, expected {block_checksum}")
                                 self.send_command("RESEND")
                             break
                         except ValueError:
+                            if self.verbose:
+                                print(f"    UU unexpected line: {line_stripped}")
                             return None
 
                     # Check if we have all data
                     if len(data) + len(block_data) >= length:
                         # Remaining data complete, next line is checksum
-                        cs_line = self.port.readline()
+                        cs_line = self._read_line_raw(timeout=2.0)
                         if not cs_line:
                             return None
                         try:
@@ -747,6 +772,8 @@ class EnhancedISPProtocol:
                                 self.send_command("OK")
                                 block_ok = True
                             else:
+                                if self.verbose:
+                                    print(f"    UU checksum mismatch: got {received_checksum}, expected {block_checksum}")
                                 self.send_command("RESEND")
                         except ValueError:
                             return None
@@ -754,7 +781,7 @@ class EnhancedISPProtocol:
 
                 if not block_ok and lines_received == 20:
                     # Read checksum after 20 lines
-                    cs_line = self.port.readline()
+                    cs_line = self._read_line_raw(timeout=2.0)
                     if not cs_line:
                         return None
                     try:
@@ -763,6 +790,8 @@ class EnhancedISPProtocol:
                             self.send_command("OK")
                             block_ok = True
                         else:
+                            if self.verbose:
+                                print(f"    UU checksum mismatch: got {received_checksum}, expected {block_checksum}")
                             self.send_command("RESEND")
                     except ValueError:
                         return None
