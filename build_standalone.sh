@@ -23,9 +23,9 @@ mkdir -p "$DIST_DIR"
 echo "Copying application files..."
 cp "$SCRIPT_DIR/lpc1115_flasher.py" "$BUILD_DIR/$PACKAGE_NAME/"
 cp "$SCRIPT_DIR/lpc1115_isp_enhanced.py" "$BUILD_DIR/$PACKAGE_NAME/"
+cp "$SCRIPT_DIR/diagnostic.py" "$BUILD_DIR/$PACKAGE_NAME/"
 cp "$SCRIPT_DIR/config.example.ini" "$BUILD_DIR/$PACKAGE_NAME/"
 cp "$SCRIPT_DIR/README.md" "$BUILD_DIR/$PACKAGE_NAME/" 2>/dev/null || true
-cp "$SCRIPT_DIR/QUICKSTART.md" "$BUILD_DIR/$PACKAGE_NAME/" 2>/dev/null || true
 
 # Download wheel packages for Raspberry Pi (armv7l / aarch64)
 echo ""

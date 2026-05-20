@@ -200,7 +200,7 @@ class LPC11xxFlasher:
             #         Chip samples PIO0_1=LOW → enters ISP bootloader
             print("  3. Reset → /RESET HIGH (release reset, enter ISP)")
             GPIO.output(self.reset_pin, self._reset_inactive())
-            time.sleep(0.1)  # PIO0_1 is sampled within first few µs
+            time.sleep(0.05)  # PIO0_1 sampled within first µs after reset
 
             # Step 4: Release ISP_Enable to avoid bus contention
             #         (bootloader may reconfigure PIO0_1 as output)
@@ -209,7 +209,7 @@ class LPC11xxFlasher:
 
             # Step 5: Wait for bootloader to initialize UART
             print("  5. Waiting for bootloader UART init...")
-            time.sleep(0.5)
+            time.sleep(0.3)
 
             print("  ✓ ISP mode entered")
             return True
@@ -264,11 +264,10 @@ class LPC11xxFlasher:
             return False
 
     def open_serial(self) -> bool:
-        """Open serial port for ISP communication.
+        """Open serial port exclusively for ISP communication.
 
-        Opens WITHOUT XON/XOFF initially — the sync handshake must complete
-        without flow control. XON/XOFF is enabled after synchronization
-        for the data transfer phase (UU-encoding).
+        Uses exclusive=True (TIOCEXCL) to prevent conflicts with other
+        processes using the same port (e.g. knxd, getty).
         """
         if self.verbose:
             print(f"\nOpening serial port {self.uart_port} @ {self.uart_baudrate}...")
@@ -282,12 +281,22 @@ class LPC11xxFlasher:
                 timeout=1.0,
                 xonxoff=False,
                 rtscts=False,
-                dsrdtr=False
+                dsrdtr=False,
+                exclusive=True
             )
-            time.sleep(0.1)
+            time.sleep(0.05)
             if self.verbose:
-                print(f"  ✓ Serial port opened")
+                print(f"  ✓ Serial port opened (exclusive)")
             return True
+        except serial.SerialException as e:
+            err_msg = str(e).lower()
+            if 'exclusively lock' in err_msg or 'resource busy' in err_msg or 'permission' in err_msg:
+                print(f"  ✗ Serial port {self.uart_port} is in use by another process!")
+                print(f"    Check: sudo fuser {self.uart_port}")
+                print(f"    Common causes: knxd, getty, or other serial services")
+            else:
+                print(f"  ✗ Failed to open serial port: {e}")
+            return False
         except Exception as e:
             print(f"  ✗ Failed to open serial port: {e}")
             return False
@@ -299,46 +308,36 @@ class LPC11xxFlasher:
             self.serial_port = None
 
     def _re_enter_isp(self):
-        """Re-enter ISP mode silently (for sync retries).
-        Full ISP entry cycle including releasing ISP_Enable after sampling.
-        """
+        """Re-enter ISP mode silently (for sync retries)."""
         GPIO.output(self.isp_enable_pin, self._isp_active())
         time.sleep(0.01)
         GPIO.output(self.reset_pin, self._reset_active())
-        time.sleep(0.1)
+        time.sleep(0.05)
         GPIO.output(self.reset_pin, self._reset_inactive())
-        time.sleep(0.1)  # Let PIO0_1 be sampled
+        time.sleep(0.05)
         GPIO.output(self.isp_enable_pin, self._isp_inactive())
-        time.sleep(0.5)  # Wait for bootloader UART init
+        time.sleep(0.3)
 
     def synchronize(self) -> bool:
-        """Perform ISP synchronization handshake.
-
-        The LPC autobaud calibration at 115200 baud may not lock perfectly
-        on every attempt. Multiple retries with full reset cycles typically
-        succeed within 2-5 attempts.
-        """
+        """Perform ISP synchronization handshake."""
         print("\nSynchronizing with bootloader...")
 
         self.isp = EnhancedISPProtocol(self.serial_port, self.crystal_freq_khz, verbose=self.verbose)
 
         for attempt in range(5):
             if attempt > 0:
-                print(f"  Retry {attempt + 1}/5...")
-                # Re-enter ISP mode fully (reset for fresh autobaud calibration)
+                if self.verbose:
+                    print(f"  Retry {attempt + 1}/5...")
                 self._re_enter_isp()
-                time.sleep(0.1)
-                # Clear serial buffers after reset
                 self.serial_port.reset_input_buffer()
                 self.serial_port.reset_output_buffer()
 
             if self.isp.synchronize():
-                # Enable XON/XOFF for data transfer phase after successful sync
                 self.serial_port.xonxoff = True
                 print("  ✓ Synchronized")
                 return True
 
-        print("  ✗ Synchronization failed after 5 attempts")
+        print("  ✗ Synchronization failed")
         print(f"    Port: {self.uart_port}")
         print("    Tip: Try lower baud rate in config.ini (e.g. uart_baudrate = 57600)")
         return False
