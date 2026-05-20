@@ -78,10 +78,20 @@ else
     echo "    Note: You may need to log out and back in"
 fi
 
-# Install Python requirements
+# Install Python requirements system-wide (no venv needed)
 echo ""
-echo "Installing Python requirements..."
-pip3 install -r requirements.txt
+echo "Installing Python requirements (system-wide)..."
+sudo apt-get install -y python3-serial python3-intelhex 2>/dev/null || true
+
+# Fallback: install via pip with --break-system-packages if apt packages unavailable
+if ! python3 -c "import serial" 2>/dev/null; then
+    echo "  Installing pyserial via pip..."
+    pip3 install --break-system-packages pyserial 2>/dev/null || pip3 install pyserial
+fi
+if ! python3 -c "import intelhex" 2>/dev/null; then
+    echo "  Installing intelhex via pip..."
+    pip3 install --break-system-packages intelhex 2>/dev/null || pip3 install intelhex
+fi
 
 echo ""
 echo "========================================="
@@ -101,6 +111,10 @@ echo ""
 echo "  3. Place your Intel Hex file in the same directory"
 echo ""
 echo "  4. Run the flasher:"
-echo "     sudo python3 lpc1115_flasher.py your_program.hex"
+echo "     sudo python3 lpc1115_flasher.py write your_program.hex"
+echo ""
+echo "  Offline deployment (no internet required):"
+echo "     Run 'build_standalone.sh' on a machine with internet to create"
+echo "     a self-contained archive for transfer to the Raspberry Pi."
 echo ""
 echo "For more information, see README.md"

@@ -88,6 +88,10 @@ class LPC11xxFlasher:
         self.uart_baudrate = self.DEFAULT_UART_BAUDRATE
         self.crystal_freq_khz = self.DEFAULT_CRYSTAL_FREQ_KHZ
 
+        # GPIO inversion flags (True = signal passes through inverter)
+        self.invert_reset = True
+        self.invert_isp_enable = True
+
         self._load_config(config_file)
 
         GPIO.setmode(GPIO.BCM)
@@ -114,6 +118,8 @@ class LPC11xxFlasher:
             self.isp_enable_pin = config.getint('hardware', 'isp_enable_pin', fallback=self.isp_enable_pin)
             self.uart_port = config.get('hardware', 'uart_port', fallback=self.uart_port)
             self.uart_baudrate = config.getint('hardware', 'uart_baudrate', fallback=self.uart_baudrate)
+            self.invert_reset = config.getboolean('hardware', 'invert_reset', fallback=self.invert_reset)
+            self.invert_isp_enable = config.getboolean('hardware', 'invert_isp_enable', fallback=self.invert_isp_enable)
 
         if config.has_section('timing'):
             self.crystal_freq_khz = config.getint('hardware', 'crystal_freq_khz',
@@ -123,21 +129,38 @@ class LPC11xxFlasher:
             if not self.verbose:
                 self.verbose = config.getboolean('debug', 'verbose', fallback=False)
 
+    def _reset_active(self) -> int:
+        """GPIO level to assert /RESET (chip in reset)"""
+        return GPIO.HIGH if self.invert_reset else GPIO.LOW
+
+    def _reset_inactive(self) -> int:
+        """GPIO level to release /RESET (chip running)"""
+        return GPIO.LOW if self.invert_reset else GPIO.HIGH
+
+    def _isp_active(self) -> int:
+        """GPIO level to request ISP mode (PIO0_1 LOW on LPC)"""
+        return GPIO.HIGH if self.invert_isp_enable else GPIO.LOW
+
+    def _isp_inactive(self) -> int:
+        """GPIO level for normal boot (PIO0_1 HIGH on LPC)"""
+        return GPIO.LOW if self.invert_isp_enable else GPIO.HIGH
+
     def setup_gpio(self) -> bool:
         """Setup GPIO pins for ISP control.
 
-        Initial state: both GPIOs LOW → inverter outputs HIGH →
-        /RESET = HIGH (not in reset), PIO0_1 = HIGH (normal boot).
+        Initial state: /RESET released (chip running), PIO0_1 HIGH (normal boot).
         """
         if self.verbose:
             print("Setting up GPIO pins...")
         try:
-            GPIO.setup(self.reset_pin, GPIO.OUT, initial=GPIO.LOW)
-            GPIO.setup(self.isp_enable_pin, GPIO.OUT, initial=GPIO.LOW)
+            GPIO.setup(self.reset_pin, GPIO.OUT, initial=self._reset_inactive())
+            GPIO.setup(self.isp_enable_pin, GPIO.OUT, initial=self._isp_inactive())
             if self.verbose:
+                inv_str = "(inverted)" if self.invert_reset else "(direct)"
+                isp_inv_str = "(inverted)" if self.invert_isp_enable else "(direct)"
                 print(f"  ✓ GPIO pins configured")
-                print(f"    Reset (GPIO{self.reset_pin}): LOW → Inv → /RESET HIGH (running)")
-                print(f"    ISP_Enable (GPIO{self.isp_enable_pin}): LOW → Inv → PIO0_1 HIGH (normal)")
+                print(f"    Reset (GPIO{self.reset_pin}): /RESET HIGH - running {inv_str}")
+                print(f"    ISP_Enable (GPIO{self.isp_enable_pin}): PIO0_1 HIGH - normal {isp_inv_str}")
             return True
         except Exception as e:
             print(f"  ✗ GPIO setup failed: {e}")
@@ -149,35 +172,38 @@ class LPC11xxFlasher:
 
         The LPC11xx enters ISP mode when PIO0_1 is LOW at reset release.
 
-        GPIO signals go through inverters:
-          GPIO HIGH → Inverter → LPC pin LOW
-          GPIO LOW  → Inverter → LPC pin HIGH
-
         Sequence:
-          1. ISP_Enable GPIO HIGH → Inv → PIO0_1 LOW (request ISP)
-          2. Reset GPIO HIGH      → Inv → /RESET LOW (assert reset)
+          1. ISP_Enable active  → PIO0_1 LOW (request ISP)
+          2. Reset active       → /RESET LOW (assert reset)
           3. Wait for reset
-          4. Reset GPIO LOW       → Inv → /RESET HIGH (release reset)
+          4. Reset inactive     → /RESET HIGH (release reset)
              Chip samples PIO0_1=LOW → boots into ISP bootloader
+          5. ISP_Enable inactive → PIO0_1 HIGH (clean state)
+             ISP bootloader is already running, PIO0_1 no longer sampled.
         """
         print("\nEntering ISP mode...")
 
         try:
-            # Step 1: Request ISP mode (PIO0_1 LOW via inverter)
-            print("  1. ISP_Enable HIGH → PIO0_1 LOW (ISP request)")
-            GPIO.output(self.isp_enable_pin, GPIO.HIGH)
+            # Step 1: Request ISP mode (PIO0_1 LOW on LPC)
+            print("  1. ISP_Enable → PIO0_1 LOW (ISP request)")
+            GPIO.output(self.isp_enable_pin, self._isp_active())
             time.sleep(0.01)
 
-            # Step 2: Assert reset (/RESET LOW via inverter)
-            print("  2. Reset HIGH → /RESET LOW (assert reset)")
-            GPIO.output(self.reset_pin, GPIO.HIGH)
+            # Step 2: Assert reset (/RESET LOW on LPC)
+            print("  2. Reset → /RESET LOW (assert reset)")
+            GPIO.output(self.reset_pin, self._reset_active())
             time.sleep(0.1)
 
-            # Step 3: Release reset (/RESET HIGH via inverter)
+            # Step 3: Release reset (/RESET HIGH on LPC)
             #         Chip samples PIO0_1=LOW → enters ISP bootloader
-            print("  3. Reset LOW → /RESET HIGH (release reset, enter ISP)")
-            GPIO.output(self.reset_pin, GPIO.LOW)
+            print("  3. Reset → /RESET HIGH (release reset, enter ISP)")
+            GPIO.output(self.reset_pin, self._reset_inactive())
             time.sleep(0.2)
+
+            # Step 4: Release ISP_Enable (clean state, bootloader already running)
+            print("  4. ISP_Enable → PIO0_1 HIGH (clean state)")
+            GPIO.output(self.isp_enable_pin, self._isp_inactive())
+            time.sleep(0.01)
 
             print("  ✓ ISP mode entered")
             return True
@@ -186,30 +212,43 @@ class LPC11xxFlasher:
             print(f"  ✗ Failed to enter ISP mode: {e}")
             return False
 
+    def reset_target(self) -> bool:
+        """
+        Reset LPC11xx (assert and release /RESET).
+        Used to restart the ISP handshake or boot user code.
+
+        After reset, PIO0_1 state determines boot mode:
+          PIO0_1 LOW  at reset release → ISP bootloader
+          PIO0_1 HIGH at reset release → user code
+        """
+        try:
+            GPIO.output(self.reset_pin, self._reset_active())
+            time.sleep(0.1)
+            GPIO.output(self.reset_pin, self._reset_inactive())
+            time.sleep(0.2)
+            return True
+        except Exception as e:
+            print(f"  ✗ Reset failed: {e}")
+            return False
+
     def exit_isp_mode(self) -> bool:
         """
         Exit ISP mode and reset LPC11xx into normal operation.
 
         Sequence:
-          1. ISP_Enable GPIO LOW  → Inv → PIO0_1 HIGH (normal boot)
-          2. Reset GPIO HIGH      → Inv → /RESET LOW (assert reset)
-          3. Reset GPIO LOW       → Inv → /RESET HIGH (release reset)
-             Chip samples PIO0_1=HIGH → boots user code
+          1. ISP_Enable inactive → PIO0_1 HIGH (normal boot)
+          2. Assert reset
+          3. Release reset → boots user code
         """
         print("\nResetting to normal operation...")
 
         try:
-            # Step 1: Deactivate ISP (PIO0_1 HIGH via inverter)
-            GPIO.output(self.isp_enable_pin, GPIO.LOW)
+            # Step 1: Ensure ISP disabled (PIO0_1 HIGH on LPC)
+            GPIO.output(self.isp_enable_pin, self._isp_inactive())
             time.sleep(0.01)
 
-            # Step 2: Assert reset
-            GPIO.output(self.reset_pin, GPIO.HIGH)
-            time.sleep(0.1)
-
-            # Step 3: Release reset → boots user code
-            GPIO.output(self.reset_pin, GPIO.LOW)
-            time.sleep(0.2)
+            # Step 2+3: Reset cycle
+            self.reset_target()
 
             print("  ✓ LPC11xx reset and running user code")
             return True
@@ -257,7 +296,12 @@ class LPC11xxFlasher:
         for attempt in range(3):
             if attempt > 0:
                 print(f"  Retry {attempt + 1}/3...")
+                # Reset target to restart the bootloader for a clean handshake
+                self.reset_target()
                 time.sleep(0.5)
+                # Clear serial buffers after reset
+                self.serial_port.reset_input_buffer()
+                self.serial_port.reset_output_buffer()
 
             if self.isp.synchronize():
                 print("  ✓ Synchronized")
@@ -313,10 +357,19 @@ class LPC11xxFlasher:
         return True
 
     def _cleanup(self, reset: bool = True):
-        """Close serial, optionally reset chip, cleanup GPIO."""
+        """Close serial, reset chip, cleanup GPIO.
+
+        Always performs a reset to ensure the ISP handshake can restart
+        on next invocation. The 'reset' parameter controls whether to
+        boot into user code (True) or re-enter ISP (False, still resets).
+        """
         self.close_serial()
         if reset:
             self.exit_isp_mode()
+        else:
+            # Even without full exit, always reset the target so the
+            # bootloader is in a clean state for the next handshake.
+            self.reset_target()
         try:
             GPIO.cleanup()
         except Exception:
