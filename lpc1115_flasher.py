@@ -258,7 +258,12 @@ class LPC11xxFlasher:
             return False
 
     def open_serial(self) -> bool:
-        """Open serial port for ISP communication"""
+        """Open serial port for ISP communication.
+
+        Opens WITHOUT XON/XOFF initially — the sync handshake must complete
+        without flow control. XON/XOFF is enabled after synchronization
+        for the data transfer phase (UU-encoding).
+        """
         if self.verbose:
             print(f"\nOpening serial port {self.uart_port} @ {self.uart_baudrate}...")
         try:
@@ -269,7 +274,7 @@ class LPC11xxFlasher:
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=1.0,
-                xonxoff=True,   # XON/XOFF flow control (UM10398 requires DC1/DC3)
+                xonxoff=False,
                 rtscts=False,
                 dsrdtr=False
             )
@@ -311,11 +316,14 @@ class LPC11xxFlasher:
                 print(f"  Retry {attempt + 1}/3...")
                 # Re-enter ISP mode fully (ISP_Enable + reset cycle)
                 self._re_enter_isp()
+                time.sleep(0.1)
                 # Clear serial buffers after reset
                 self.serial_port.reset_input_buffer()
                 self.serial_port.reset_output_buffer()
 
             if self.isp.synchronize():
+                # Enable XON/XOFF for data transfer phase after successful sync
+                self.serial_port.xonxoff = True
                 print("  ✓ Synchronized")
                 return True
 

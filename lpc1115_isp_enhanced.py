@@ -225,29 +225,49 @@ class EnhancedISPProtocol:
 
     def _read_sync_response(self, timeout: float = 3.0) -> Optional[str]:
         """
-        Read the synchronization response with handling for split/partial receives.
+        Read the synchronization response with robust byte accumulation.
 
-        The bootloader sends "Synchronized\\r\\n" but due to UART timing,
-        this may arrive in multiple fragments (e.g. "Synchron" + "ized\\r\\n").
-        This method uses readline() with the full timeout to ensure all bytes
-        are collected, even if inter-byte gaps exceed the default port timeout.
+        The bootloader sends "Synchronized\\r\\n" but due to UART timing and
+        autobaud calibration, bytes may arrive with gaps or be partially lost
+        on the first attempt. This method accumulates all incoming bytes and
+        searches for "Synchronized" in the stream.
 
         Returns:
-            Complete line (stripped) or None on timeout
+            "Synchronized" if found in stream, or whatever was received (stripped), or None
         """
+        buf = b''
+        deadline = time.time() + timeout
+
         old_timeout = self.port.timeout
-        self.port.timeout = timeout
         try:
-            line = self.port.readline()
-            if line:
-                result = line.decode('ascii', errors='ignore').strip()
-                if result:
-                    return result
-            return None
-        except Exception:
-            return None
+            while time.time() < deadline:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                # Use short reads to accumulate without missing bytes
+                self.port.timeout = min(remaining, 0.5)
+                chunk = self.port.read(max(1, self.port.in_waiting))
+                if chunk:
+                    buf += chunk
+                    # Check if we have a complete "Synchronized" in the buffer
+                    decoded = buf.decode('ascii', errors='ignore')
+                    if "Synchronized" in decoded:
+                        return "Synchronized"
+                    # If we have a line terminator, return whatever we got
+                    if b'\n' in buf:
+                        line = buf.split(b'\n')[0]
+                        result = line.decode('ascii', errors='ignore').strip()
+                        if result:
+                            return result
+                        # Empty line (just \r\n), continue reading
+                        buf = buf.split(b'\n', 1)[1]
         finally:
             self.port.timeout = old_timeout
+
+        # Timeout - return whatever we have
+        if buf:
+            return buf.decode('ascii', errors='ignore').strip()
+        return None
 
     def _consume_echo(self, sent_cmd: str) -> None:
         """Consume the echo of the sent command if echo is enabled"""
@@ -274,7 +294,7 @@ class EnhancedISPProtocol:
         Perform ISP synchronization handshake (UM10398, Section 26.4.1)
 
         Sequence:
-          1. Host sends '?'
+          1. Host sends '?' (possibly multiple times for reliable autobaud)
           2. Device responds 'Synchronized\\r\\n'
           3. Host sends 'Synchronized\\r\\n'
           4. Device responds 'Synchronized\\r\\nOK\\r\\n'
@@ -288,14 +308,33 @@ class EnhancedISPProtocol:
         self.port.reset_input_buffer()
         self.port.reset_output_buffer()
 
-        # Step 1: Send '?' for autobaud
-        self.port.write(b'?')
-        self.port.flush()
+        # Step 1: Send '?' for autobaud detection.
+        # The LPC bootloader uses the '?' (0x3F) character to calibrate its baud
+        # rate. On the first attempt the autobaud may not lock correctly, so we
+        # send multiple '?' with short pauses. The bootloader ignores extra '?'
+        # once it has locked and will respond with "Synchronized" when ready.
+        response = None
+        for i in range(5):
+            self.port.write(b'?')
+            self.port.flush()
+            time.sleep(0.1)
 
-        # Step 2: Wait for "Synchronized"
-        # The bootloader may send partial data if timing is tight.
-        # Accumulate bytes with extended timeout to handle split responses.
-        response = self._read_sync_response(timeout=3.0)
+            # Check if anything has arrived
+            response = self._read_sync_response(timeout=0.5)
+            if response == "Synchronized":
+                break
+            # If partial or nothing, try again
+            if response and "Synchronized" in response:
+                response = "Synchronized"
+                break
+
+        # If short attempts didn't work, do one final long wait
+        if response != "Synchronized":
+            self.port.write(b'?')
+            self.port.flush()
+            response = self._read_sync_response(timeout=2.0)
+
+        # Step 2: Check response
         if response != "Synchronized":
             print(f"    Expected 'Synchronized', got: '{response}'")
             return False
