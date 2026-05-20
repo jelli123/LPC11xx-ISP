@@ -309,7 +309,7 @@ class LPC11xxFlasher:
         """Perform ISP synchronization handshake."""
         print("\nSynchronizing with bootloader...")
 
-        self.isp = EnhancedISPProtocol(self.serial_port, self.crystal_freq_khz)
+        self.isp = EnhancedISPProtocol(self.serial_port, self.crystal_freq_khz, verbose=self.verbose)
 
         for attempt in range(3):
             if attempt > 0:

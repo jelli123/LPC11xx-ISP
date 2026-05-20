@@ -172,18 +172,39 @@ class EnhancedISPProtocol:
         num_sectors = flash_bytes // cls.FLASH_SECTOR_SIZE
         return flash_bytes, ram_bytes, num_sectors
 
-    def __init__(self, serial_port, crystal_freq_khz: int = 12000):
+    def __init__(self, serial_port, crystal_freq_khz: int = 12000, verbose: bool = False):
         """
         Initialize with serial port object
 
         Args:
             serial_port: Opened serial.Serial instance
             crystal_freq_khz: Crystal frequency in kHz (default 12000 = 12MHz)
+            verbose: Enable hex/ASCII debug output of serial traffic
         """
         self.port = serial_port
         self.crystal_freq_khz = crystal_freq_khz
         self.echo_enabled = True  # Bootloader echoes by default until 'A 0' is sent
         self.synchronized = False
+        self.verbose = verbose
+
+    def _log_tx(self, data: bytes):
+        """Log transmitted bytes in hex and ASCII if verbose."""
+        if not self.verbose:
+            return
+        hex_str = ' '.join(f'{b:02X}' for b in data)
+        ascii_str = ''.join(chr(b) if 32 <= b < 127 else '.' for b in data)
+        print(f"    TX [{len(data):3d}]: {hex_str}  |{ascii_str}|")
+
+    def _log_rx(self, data: bytes):
+        """Log received bytes in hex and ASCII if verbose."""
+        if not self.verbose:
+            return
+        if not data:
+            print(f"    RX [  0]: (empty)")
+            return
+        hex_str = ' '.join(f'{b:02X}' for b in data)
+        ascii_str = ''.join(chr(b) if 32 <= b < 127 else '.' for b in data)
+        print(f"    RX [{len(data):3d}]: {hex_str}  |{ascii_str}|")
 
     def send_command(self, cmd: str) -> bool:
         """
@@ -197,7 +218,9 @@ class EnhancedISPProtocol:
         """
         try:
             line = cmd + "\r\n"
-            self.port.write(line.encode('ascii'))
+            encoded = line.encode('ascii')
+            self._log_tx(encoded)
+            self.port.write(encoded)
             self.port.flush()
             return True
         except Exception as e:
@@ -216,7 +239,9 @@ class EnhancedISPProtocol:
         try:
             line = self.port.readline()
             if line:
+                self._log_rx(line)
                 return line.decode('ascii', errors='ignore').strip()
+            self._log_rx(b'')
             return None
         except Exception:
             return None
@@ -249,6 +274,7 @@ class EnhancedISPProtocol:
                 chunk = self.port.read(max(1, self.port.in_waiting))
                 if chunk:
                     buf += chunk
+                    self._log_rx(chunk)
                     # Check if we have a complete "Synchronized" in the buffer
                     decoded = buf.decode('ascii', errors='ignore')
                     if "Synchronized" in decoded:
@@ -266,6 +292,7 @@ class EnhancedISPProtocol:
 
         # Timeout - return whatever we have
         if buf:
+            self._log_rx(buf)
             return buf.decode('ascii', errors='ignore').strip()
         return None
 
@@ -315,6 +342,7 @@ class EnhancedISPProtocol:
         # once it has locked and will respond with "Synchronized" when ready.
         response = None
         for i in range(5):
+            self._log_tx(b'?')
             self.port.write(b'?')
             self.port.flush()
             time.sleep(0.1)
@@ -330,6 +358,7 @@ class EnhancedISPProtocol:
 
         # If short attempts didn't work, do one final long wait
         if response != "Synchronized":
+            self._log_tx(b'?')
             self.port.write(b'?')
             self.port.flush()
             response = self._read_sync_response(timeout=2.0)
